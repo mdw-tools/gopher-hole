@@ -1,4 +1,4 @@
-# claude-go-dev
+# gopher-hole
 
 A Docker-based environment for running [Claude Code](https://claude.ai/code) with `--dangerously-skip-permissions` on Go projects, while keeping your host machine safe and letting you inspect changes live in your IDE or git UI.
 
@@ -66,7 +66,7 @@ A convenience wrapper that:
 **Build the image (once):**
 
 ```bash
-docker build -t claude-go-dev .
+docker build -t gopher-hole .
 ```
 
 **Drop to a shell, then launch Claude manually:**

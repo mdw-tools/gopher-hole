@@ -7,7 +7,7 @@
 │                        ▘▘ ▝▝                       │                                                                   │
 │       Sonnet 4.6 · Claude Pro ·                    │                                                                   │
 │       mdwhatcott@fastmail.com's Organization       │                                                                   │
-│             /private/tmp/claude-go-dev             │                                                                   │
+│             /private/tmp/gopher-hold               │                                                                   │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 ❯ Scrupulously audit this repository. It proports to provide a 'safe' setup for running an agent like Claude Code with
@@ -19,7 +19,7 @@ mercy.
 ⏺ Here is the full audit, no mercy given.
 
   ---
-  Security Audit: claude-go-dev
+  Security Audit: gopher-hold
 
   Verdict: Do not use in a corporate setting. The setup has several security claims that are either factually wrong, trivially
   bypassed, or structurally inadequate for a multi-user or regulated environment. Details follow.

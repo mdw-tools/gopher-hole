@@ -51,4 +51,4 @@ else
   echo "NOTE: ANTHROPIC_API_KEY not set. Run 'claude login' inside the container, or use --with-credentials." >&2
 fi
 
-docker run "${DOCKER_ARGS[@]}" claude-go-dev "$@"
+docker run "${DOCKER_ARGS[@]}" gopher-hole "$@"
