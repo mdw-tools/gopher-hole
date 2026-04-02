@@ -143,8 +143,8 @@ For this experiment, we'll document option 3 as a recommendation and verify whet
 
 ### Phase 1: Minimal bootable VM with VirtioFS mount
 
-- [ ] Create `attempt-002-lima/` directory
-- [ ] Write `gopher-hole.yaml` with: `vmType: vz`, Ubuntu 24.04 ARM64 image, 4 CPUs, 8 GiB RAM, 50 GiB disk, writable VirtioFS mount of `~/src`
+- [x] Create `attempt-002-lima/` directory
+- [x] Write `gopher-hole.yaml` with: `vmType: vz`, Ubuntu 24.04 ARM64 image, 4 CPUs, 8 GiB RAM, 50 GiB disk, writable VirtioFS mount of `~/src`
 - [ ] Verify: `limactl create --name=gopher-hole ./gopher-hole.yaml && limactl start gopher-hole` boots successfully
 - [ ] Verify: `limactl shell gopher-hole` drops to a shell
 - [ ] Verify: files in `~/src` on the host are visible and writable inside the VM at the expected mount point
@@ -152,15 +152,15 @@ For this experiment, we'll document option 3 as a recommendation and verify whet
 
 ### Phase 2: Dev tool provisioning
 
-- [ ] Write `provision.sh` — installs Go (latest stable), Node.js 22, Claude Code (`@anthropic-ai/claude-code`), and essential dev tools (`git`, `make`, `curl`, `build-essential`)
-- [ ] Reference `provision.sh` from `gopher-hole.yaml` as a `mode: system` provisioning script
+- [x] Write `provision.sh` — installs Go (latest stable), Node.js 22, Claude Code (`@anthropic-ai/claude-code`), and essential dev tools (`git`, `make`, `curl`, `build-essential`)
+- [x] Reference `provision.sh` from `gopher-hole.yaml` as a `mode: system` provisioning script
 - [ ] Verify: recreate the VM (`limactl delete gopher-hole && limactl create ...`) and confirm provisioning runs
 - [ ] Verify: `go version`, `node --version`, `claude --version` all succeed inside the VM
 
 ### Phase 3: Firewall (nftables allowlist)
 
-- [ ] Write `init-firewall.sh` — resolves allowed domains to IPs, creates nftables rules: default-deny OUTPUT, allow loopback, allow established, allow HTTPS (443 only) to allowed IPs, allow DNS only to Lima host-agent address, drop everything else
-- [ ] Reference `init-firewall.sh` from `provision.sh` (runs at provisioning time; rules persist across reboots via nftables service)
+- [x] Write `init-firewall.sh` — resolves allowed domains to IPs, creates nftables rules: default-deny OUTPUT, allow loopback, allow established, allow HTTPS (443 only) to allowed IPs, allow DNS only to Lima host-agent address, drop everything else
+- [x] Reference `init-firewall.sh` from `provision.sh` (runs at provisioning time; rules persist across reboots via nftables service)
 - [ ] Verify: `curl https://api.anthropic.com` succeeds (allowed domain)
 - [ ] Verify: `curl https://example.com` fails/times out (blocked domain)
 - [ ] Verify: `dig @8.8.8.8 example.com` fails (direct DNS to external resolver blocked)
@@ -169,22 +169,22 @@ For this experiment, we'll document option 3 as a recommendation and verify whet
 
 ### Phase 4: Credential forwarding and `~/.claude` mount
 
-- [ ] Add read-only VirtioFS mount of `~/.claude` to `gopher-hole.yaml`
+- [x] Add read-only VirtioFS mount of `~/.claude` to `gopher-hole.yaml`
 - [ ] Verify: `~/.claude/settings.json` is readable inside the VM
 - [ ] Verify: writing to the `~/.claude` mount point inside the VM fails (read-only)
-- [ ] Write `run.sh` — wrapper that runs `limactl shell gopher-hole --workdir <dir>` with `ANTHROPIC_API_KEY` forwarded from the host environment; accepts a project directory argument (defaults to cwd); optionally accepts a command (defaults to `claude --dangerously-skip-permissions`)
+- [x] Write `run.sh` — wrapper that runs `limactl shell gopher-hole --workdir <dir>` with `ANTHROPIC_API_KEY` forwarded from the host environment; accepts a project directory argument (defaults to cwd); optionally accepts a command (defaults to `claude --dangerously-skip-permissions`)
 - [ ] Verify: `ANTHROPIC_API_KEY=test ./run.sh ~/src/myproject` enters the VM in the right directory with the env var set
 - [ ] Test whether Claude Code can read settings from the read-only mount. If not, adjust strategy (symlink writable dirs, copy on launch, etc.)
 
 ### Phase 5: Makefile and lifecycle
 
-- [ ] Write `Makefile` with targets: `vm-create`, `vm-destroy`, `vm-start`, `vm-stop`, `vm-ssh`, `vm-status`
+- [x] Write `Makefile` with targets: `vm-create`, `vm-destroy`, `vm-start`, `vm-stop`, `vm-ssh`, `vm-status`
 - [ ] Verify: `make vm-create` provisions the VM from scratch
 - [ ] Verify: `make vm-destroy && make vm-create` produces a working VM (disposability)
 - [ ] Verify: `make vm-ssh` drops to a shell inside the VM
 
 ### Phase 6: Documentation
 
-- [ ] Write `README.md` covering: rationale, how it works (architecture diagram), components, usage (build, launch, authentication), risks and mitigations, comparison to Docker approach, known limitations
-- [ ] Document `core.hooksPath` recommendation for git hook protection on the host
-- [ ] Document residual risks honestly (DNS exfiltration via query names, GitHub exfiltration, VirtioFS maturity)
+- [x] Write `README.md` covering: rationale, how it works (architecture diagram), components, usage (build, launch, authentication), risks and mitigations, comparison to Docker approach, known limitations
+- [x] Document `core.hooksPath` recommendation for git hook protection on the host
+- [x] Document residual risks honestly (DNS exfiltration via query names, GitHub exfiltration, VirtioFS maturity)

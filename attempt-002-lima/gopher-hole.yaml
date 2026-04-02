@@ -1,0 +1,39 @@
+# Lima VM definition for isolated Claude Code agent environment.
+# Uses Apple's Virtualization.framework (vz) with VirtioFS mounts.
+
+vmType: vz
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 4
+memory: "8GiB"
+disk: "50GiB"
+
+mountType: virtiofs
+mountInotify: true
+
+mounts:
+  - location: "~/src"
+    writable: true
+  - location: "~/.claude"
+    writable: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -euo pipefail
+      # provision.sh lives on the writable VirtioFS mount (~/src).
+      # Locate it via the first rw virtiofs mount point.
+      SRC_MOUNT=$(findmnt -t virtiofs -o TARGET -rn | head -1)
+      if [[ -z "$SRC_MOUNT" ]]; then
+        echo "ERROR: No virtiofs mount found" >&2
+        exit 1
+      fi
+      PROVISION_DIR="${SRC_MOUNT}/github.com/mdw-tools/gopher-hole/attempt-002-lima"
+      bash "${PROVISION_DIR}/provision.sh"
+
+networks:
+  - vzNAT: true
