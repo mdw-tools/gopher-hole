@@ -11,9 +11,9 @@
 # Options:
 #   --provider    aws | do                  (default: aws)
 #   --size        Instance/droplet size     (default: see DEFAULTS below)
-#   --region      Cloud region              (default: us-east-1 / nyc3)
-#   --key         SSH key name (cloud-side) (default: $USER)
-#   --key-file    Local private key path    (default: ~/.ssh/id_rsa)
+#   --region      Cloud region              (default: us-west-1 / nyc3)
+#   --key         SSH key name (cloud-side) (default: claude-cloud)
+#   --key-file    Local private key path    (default: ~/.ssh/claude-cloud.pem)
 #   --name        Instance name/tag         (default: claude-code-TIMESTAMP)
 #   --sync-dir    Directory to rsync        (default: current directory)
 #   --help        Show this message
@@ -38,8 +38,8 @@ AWS_SIZE="t3.medium"
 DO_SIZE="s-2vcpu-4gb"
 AWS_REGION="us-west-1"
 DO_REGION="nyc3"
-SSH_KEY_NAME="${USER}"
-SSH_KEY_FILE="${HOME}/.ssh/id_ed25519"
+SSH_KEY_NAME="claude-cloud"
+SSH_KEY_FILE="${HOME}/.ssh/claude-cloud.pem"
 INSTANCE_NAME="claude-code-$(date +%s)"
 SYNC_DIR="$(pwd)"
 LOCAL_SSH_PORT=2222   # Reverse tunnel port: VM → localhost:22
