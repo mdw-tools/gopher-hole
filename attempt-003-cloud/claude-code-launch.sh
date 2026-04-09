@@ -166,14 +166,21 @@ Your code has been synced here from your local machine.
 claude
 ```
 
-## Sync changes back to your local machine
-A reverse SSH tunnel is active for this session. Run from anywhere in the VM:
+## Recommended review workflow
+1. Let Claude make changes here (leave them uncommitted)
+2. Run `syncback` to pull the working tree to your host
+3. Review on your host: `git diff`, IDE diff tools, etc.
+4. Commit and push on your host: `git commit && git push`
+5. Back here on the VM: `git pull` — git state is back in sync
+
+SSH agent forwarding is active, so `git pull`/`git push` on the VM
+authenticate using your local SSH identity automatically.
+
+## Sync uncommitted files (mid-session checkpoint or non-git use)
 ```bash
 syncback
 ```
-This pushes the entire workspace (including .git) back to the host.
-It runs automatically when you exit the session, but you can call it
-at any point to checkpoint your work mid-session.
+This pushes the entire workspace to the host and runs automatically on exit.
 EOF
 
 # Signal that setup is complete
@@ -353,6 +360,12 @@ sync_back() {
 open_ssh() {
   local ip="$1"
 
+  # Warn if no SSH identities are loaded — agent forwarding won't help without them
+  if ! ssh-add -l &>/dev/null; then
+    warn "No SSH identities in ssh-agent — git push/pull on the VM may fail."
+    warn "Run: ssh-add ~/.ssh/your_key  (then re-run this script)"
+  fi
+
   # Copy the restricted private key to the VM
   local remote_key_path="/tmp/syncback_key_$$"
   info "Installing restricted syncback key on VM..."
@@ -364,6 +377,7 @@ open_ssh() {
   echo -e "${YELLOW}Type 'syncback' on the remote at any time to push changes back.${NC}"
   echo -e "${YELLOW}Changes are also synced automatically when you exit.${NC}"
   ssh -i "$SSH_KEY_FILE" \
+      -A \
       -o StrictHostKeyChecking=no \
       -o ExitOnForwardFailure=yes \
       -R "${LOCAL_SSH_PORT}:localhost:22" \
