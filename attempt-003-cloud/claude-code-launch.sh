@@ -118,12 +118,12 @@ for f in /home/ubuntu/.bashrc /home/ubuntu/.profile; do
 done
 
 # Install plugins from the agentics marketplace
+# Use || true on each install so a missing plugin doesn't abort the whole setup
 sudo -u ubuntu bash -c '
   export PATH="$HOME/.claude/bin:$HOME/.local/bin:$PATH"
-  claude plugin marketplace add mdw-tools/agentics
-  claude plugin install picard@agentics
-  claude plugin install data@agentics
-  claude plugin install gopls-lsp@claude-plugins-official
+  claude plugin marketplace add mdw-tools/agentics || true
+  claude plugin install picard@agentics || true
+  claude plugin install data@agentics || true
 '
 
 # Create workspace directory
