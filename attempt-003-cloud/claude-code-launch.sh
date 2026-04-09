@@ -94,7 +94,13 @@ export DEBIAN_FRONTEND=noninteractive
 
 # System packages
 apt-get update -qq
-apt-get install -y -qq git curl rsync build-essential ripgrep golang-go
+apt-get install -y -qq git curl rsync build-essential ripgrep
+
+# Install latest Go directly from go.dev (apt ships a stale version)
+GO_VERSION=$(curl -fsSL "https://go.dev/VERSION?m=text" | head -1)
+curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
+echo 'export PATH="/usr/local/go/bin:$PATH"' > /etc/profile.d/go.sh
+export PATH="/usr/local/go/bin:$PATH"
 
 # Install Claude Code (native binary — no Node.js required)
 curl -fsSL https://claude.ai/install.sh | sudo -u ubuntu bash
@@ -110,6 +116,15 @@ for f in /home/ubuntu/.bashrc /home/ubuntu/.profile; do
   grep -q '\.claude/bin\|\.local/bin' "$f" 2>/dev/null || \
     echo 'export PATH="$HOME/.claude/bin:$HOME/.local/bin:$PATH"' >> "$f"
 done
+
+# Install plugins from the agentics marketplace
+sudo -u ubuntu bash -c '
+  export PATH="$HOME/.claude/bin:$HOME/.local/bin:$PATH"
+  claude plugin marketplace add mdw-tools/agentics
+  claude plugin install picard@agentics
+  claude plugin install data@agentics
+  claude plugin install gopls-lsp@claude-plugins-official
+'
 
 # Create workspace directory
 mkdir -p /home/ubuntu/workspace
@@ -134,7 +149,6 @@ syncback() {
     --exclude 'node_modules' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
-    --exclude 'CLAUDE_READY.md' \
     ~/workspace/ \
     "${SYNCBACK_USER}@localhost:${SYNCBACK_DIR}/"
   echo "Done."
@@ -142,7 +156,7 @@ syncback() {
 SYNCEOF
 
 # Leave a README
-cat > /home/ubuntu/workspace/CLAUDE_READY.md << 'EOF'
+cat > /home/ubuntu/CLAUDE_READY.md << 'EOF'
 # Claude Code Remote Session
 
 Your code has been synced here from your local machine.
@@ -258,6 +272,50 @@ wait_for_setup() {
   success "Instance setup complete."
 }
 
+# ── Helper: propagate host git identity to remote ────────────────────────────
+setup_git_config() {
+  local ip="$1"
+  local git_name git_email
+  git_name=$(git config --global user.name 2>/dev/null || true)
+  git_email=$(git config --global user.email 2>/dev/null || true)
+
+  if [[ -z "$git_name" && -z "$git_email" ]]; then
+    warn "No git user.name or user.email found locally — skipping git config on VM."
+    return
+  fi
+
+  info "Propagating git identity to VM..."
+  ssh -i "$SSH_KEY_FILE" -o StrictHostKeyChecking=no "${REMOTE_USER}@${ip}" "
+    ${git_name:+git config --global user.name $(printf '%q' "$git_name")}
+    ${git_email:+git config --global user.email $(printf '%q' "$git_email")}
+  "
+  success "Git identity set on VM: ${git_name} <${git_email}>"
+}
+
+# ── Helper: copy local Claude config files to remote ─────────────────────────
+sync_claude_config() {
+  local ip="$1"
+  local remote_claude_dir="/home/${REMOTE_USER}/.claude"
+  local copied=0
+
+  ssh -i "$SSH_KEY_FILE" -o StrictHostKeyChecking=no "${REMOTE_USER}@${ip}" \
+    "mkdir -p ${remote_claude_dir}"
+
+  for f in settings.json CLAUDE.md; do
+    local src="${HOME}/.claude/${f}"
+    if [[ -f "$src" ]]; then
+      info "Copying ~/.claude/${f} to VM..."
+      scp -i "$SSH_KEY_FILE" -o StrictHostKeyChecking=no -q \
+        "$src" "${REMOTE_USER}@${ip}:${remote_claude_dir}/${f}"
+      copied=$((copied + 1))
+    else
+      warn "~/.claude/${f} not found locally — skipping."
+    fi
+  done
+
+  [[ $copied -gt 0 ]] && success "Claude config copied to VM (${copied} file(s))."
+}
+
 # ── Helper: rsync local → remote ──────────────────────────────────────────────
 do_rsync() {
   local ip="$1"
@@ -283,7 +341,6 @@ sync_back() {
     --exclude 'node_modules' \
     --exclude '__pycache__' \
     --exclude '*.pyc' \
-    --exclude 'CLAUDE_READY.md' \
     "${REMOTE_USER}@${ip}:${REMOTE_DIR}/" \
     "${SYNC_DIR}/"
   success "Sync back complete. Changes (including any git commits) are now local."
@@ -395,6 +452,8 @@ launch_aws() {
 
   wait_for_ssh "$PUBLIC_IP"
   wait_for_setup "$PUBLIC_IP"
+  setup_git_config "$PUBLIC_IP"
+  sync_claude_config "$PUBLIC_IP"
   do_rsync "$PUBLIC_IP"
   open_ssh "$PUBLIC_IP"
 }
@@ -471,6 +530,8 @@ launch_do() {
 
   wait_for_ssh "$PUBLIC_IP"
   wait_for_setup "$PUBLIC_IP"
+  setup_git_config "$PUBLIC_IP"
+  sync_claude_config "$PUBLIC_IP"
   do_rsync "$PUBLIC_IP"
   open_ssh "$PUBLIC_IP"
 }
