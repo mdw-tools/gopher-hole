@@ -16,6 +16,8 @@
 #   LMSTUDIO_DEFAULT_MODEL  model id pi should default to
 #   EGRESS_ALLOW_VCS=1      also allow in-guest git/go get (default: LM Studio
 #                           only — commits and fetches happen on the host)
+#   SHARE_GO_CACHE=0        don't share the host Go module cache (default: on,
+#                           read-only, so the agent can build/test offline)
 set -euo pipefail
 
 IMAGE="gopher-hole"
@@ -56,6 +58,24 @@ elif [[ -e "$GIT_DIR_PATH" ]]; then
   echo "note: ${GIT_DIR_PATH} is a file (worktree/submodule) — read-only .git protection skipped." >&2
 fi
 
+# Share the host Go module cache read-only so the agent can build/test against
+# already-fetched modules under locked egress. Module source is
+# platform-independent (host darwin, guest linux both arm64); the guest keeps
+# its own build cache. Skipped when Go isn't on the host. Not shared in VCS
+# mode — there the guest fetches into its own writable cache, and a read-only
+# cache would block those downloads. GOPROXY=off makes missing modules fail
+# fast rather than stalling on the dropped-SYN firewall.
+GO_MOUNT=()
+if [[ "${SHARE_GO_CACHE:-1}" == "1" && "${EGRESS_ALLOW_VCS:-0}" != "1" ]]; then
+  HOST_GOMODCACHE=$(go env GOMODCACHE 2>/dev/null || true)
+  if [[ -n "$HOST_GOMODCACHE" && -d "$HOST_GOMODCACHE" ]]; then
+    GO_MOUNT+=(--volume "${HOST_GOMODCACHE}:${HOST_GOMODCACHE}:ro")
+    ENV_ARGS+=(--env "GOMODCACHE=${HOST_GOMODCACHE}" \
+               --env "GOCACHE=/home/agent/.cache/go-build" \
+               --env "GOPROXY=off")
+  fi
+fi
+
 # Allocate a TTY only when we have one (verify.sh runs without)
 TTY_ARGS=()
 [[ -t 0 ]] && TTY_ARGS+=(-it)
@@ -67,6 +87,7 @@ exec container run --rm \
   ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
   --volume "${PROJECT_DIR}:${PROJECT_DIR}" \
   ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \
+  ${GO_MOUNT[@]+"${GO_MOUNT[@]}"} \
   --volume "${PI_STATE_DIR}:/home/agent/.pi" \
   --workdir "${PROJECT_DIR}" \
   ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \

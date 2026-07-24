@@ -117,10 +117,46 @@ verify_gitro() {
   rm -rf "$dir"
 }
 
+verify_gocache() {
+  section "go module cache: offline build from a shared read-only cache"
+  command -v go >/dev/null 2>&1 || { ok "host Go absent — cache-share test skipped"; return; }
+  local sb
+  sb=$(cd "$(mktemp -d)" && pwd -P)
+  mkdir -p "$sb/mod" "$sb/proj"
+  cat > "$sb/proj/go.mod" <<'EOF'
+module demo
+go 1.26
+require golang.org/x/text v0.3.8
+EOF
+  cat > "$sb/proj/main.go" <<'EOF'
+package main
+import "golang.org/x/text/language"
+func main() { println(language.English.String()) }
+EOF
+  # Pre-fetch into a temp module cache on the host (host has network), leaving a
+  # complete go.sum — just like a real checked-in project
+  ( cd "$sb/proj" && GOMODCACHE="$sb/mod" go mod tidy ) >/dev/null 2>&1
+  # Build in-guest offline (GOPROXY=off), module cache mounted read-only —
+  # mirrors run.sh's flags under the locked-egress default
+  check "offline go build from read-only shared cache" \
+    container run --rm --cap-add CAP_NET_ADMIN \
+      -v "$sb/proj:$sb/proj" -v "$sb/mod:$sb/mod:ro" \
+      -e "GOMODCACHE=$sb/mod" -e "GOCACHE=/tmp/gobuild" -e "GOPROXY=off" \
+      -w "$sb/proj" "${IMAGE}" go build -o /tmp/demo ./...
+  # run.sh wires the (real) host cache read-only and GOPROXY=off by default
+  check_out "run.sh sets GOPROXY=off under locked egress" "off" \
+    ./run.sh "$sb/proj" bash -c 'go env GOPROXY'
+  check_out "run.sh keeps GOCACHE guest-local" "/home/agent" \
+    ./run.sh "$sb/proj" bash -c 'go env GOCACHE'
+  # Module cache files are mode 0444; make writable before removing
+  chmod -R +w "$sb" 2>/dev/null || true
+  rm -rf "$sb"
+}
+
 main() {
   local sections=("$@")
   if [[ ${#sections[@]} -eq 0 ]]; then
-    sections=(image pi run firewall gitro)
+    sections=(image pi run firewall gitro gocache)
   fi
   for s in "${sections[@]}"; do
     "verify_${s}"

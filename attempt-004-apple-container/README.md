@@ -93,6 +93,7 @@ Environment overrides for `run.sh`:
 | `LMSTUDIO_PORT`          | Host port LM Studio serves on (default: 1234)                |
 | `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed)             |
 | `EGRESS_ALLOW_VCS=1`     | Also allow in-guest `git`/`go get` (default: LM Studio only) |
+| `SHARE_GO_CACHE=0`       | Don't share the host Go module cache (default: on, read-only)|
 
 ## Session posture: read-only `.git` + locked-down egress
 
@@ -110,9 +111,23 @@ Two defenses apply automatically to every `run.sh` session:
   exfiltration channel). Set `EGRESS_ALLOW_VCS=1` to re-enable in-guest
   `git`/`go get` against github, bitbucket, and the Go module proxy.
 
-Because `go build`/`go test` inside the guest cannot fetch uncached modules
-under the default lockdown, pre-fetch on the host (`go mod download`) or run
-with `EGRESS_ALLOW_VCS=1` for build-heavy sessions.
+### Go module cache
+
+To make `go build`/`go test` work under the lockdown, `run.sh` shares the host
+Go module cache (`go env GOMODCACHE`) into the guest **read-only** by default,
+sets `GOMODCACHE` to it, gives the guest its own build cache, and sets
+`GOPROXY=off`. Module source is platform-independent, so the guest (linux)
+builds fine against the host's (darwin) downloads; the *build* cache is not
+shared because compiled objects are OS/arch-specific. Read-only means the
+agent can't poison a cache your host also uses, and `GOPROXY=off` makes a
+missing module fail fast instead of stalling on the firewall.
+
+The consequence: the agent can build/test against anything **already fetched
+on the host**, but a genuinely new dependency needs a deliberate step — either
+`go mod download` on the host, or an `EGRESS_ALLOW_VCS=1` session (which skips
+the read-only share and lets the guest fetch into its own cache). Set
+`SHARE_GO_CACHE=0` to skip the share entirely; it's also skipped automatically
+when Go isn't installed on the host or when `EGRESS_ALLOW_VCS=1`.
 
 ### Single-repo vs. a tree of repos
 
