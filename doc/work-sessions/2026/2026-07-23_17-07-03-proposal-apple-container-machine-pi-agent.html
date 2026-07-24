@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: Attempt 4 — Apple Containers + pi + LM Studio + hunk</title>
+<style>
+  :root {
+    --ink: #1a1d21;
+    --muted: #5c6570;
+    --accent: #0b6e4f;
+    --accent-soft: #e7f3ee;
+    --rule: #d9dee3;
+    --code-bg: #f4f6f8;
+    --warn-bg: #fdf3e3;
+    --warn-edge: #d99a2b;
+    --card-bg: #fafbfc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 5rem;
+    max-width: 920px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink);
+    background: #ffffff;
+  }
+  h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 0.25rem; }
+  .subtitle { color: var(--muted); margin: 0 0 2rem; font-size: 1.02rem; }
+  h2 {
+    font-size: 1.3rem;
+    margin: 2.6rem 0 0.8rem;
+    padding-bottom: 0.3rem;
+    border-bottom: 2px solid var(--accent);
+  }
+  h3 { font-size: 1.08rem; margin: 1.8rem 0 0.5rem; }
+  code, pre {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.86em;
+  }
+  code { background: var(--code-bg); padding: 0.12em 0.35em; border-radius: 4px; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8rem 0 1.2rem; font-size: 0.93rem; }
+  th, td { border: 1px solid var(--rule); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); font-weight: 600; }
+  .callout {
+    background: var(--warn-bg);
+    border-left: 4px solid var(--warn-edge);
+    border-radius: 0 8px 8px 0;
+    padding: 0.8rem 1.1rem;
+    margin: 1rem 0;
+  }
+  .decision {
+    background: var(--card-bg);
+    border: 1px solid var(--rule);
+    border-left: 4px solid var(--accent);
+    border-radius: 0 8px 8px 0;
+    padding: 0.9rem 1.2rem;
+    margin: 1.1rem 0;
+  }
+  .decision .dtitle { font-weight: 650; margin-bottom: 0.35rem; }
+  .rec { color: var(--accent); font-weight: 650; }
+  .phase {
+    background: var(--card-bg);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 1rem 1.3rem 0.8rem;
+    margin: 1.1rem 0;
+  }
+  .phase h3 { margin-top: 0.2rem; }
+  ul.tasks { list-style: none; padding-left: 0.2rem; margin: 0.5rem 0 0.8rem; }
+  ul.tasks li { margin: 0.4rem 0; padding-left: 1.9rem; text-indent: -1.9rem; }
+  ul.tasks input[type="checkbox"] { margin-right: 0.65rem; transform: scale(1.15); vertical-align: -0.1rem; }
+  .tag {
+    display: inline-block;
+    text-indent: 0; /* don't inherit the task list's hanging indent */
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0.08rem 0.5rem;
+    border-radius: 999px;
+    vertical-align: 0.12rem;
+    margin-right: 0.3rem;
+  }
+  .tag.red   { background: #fbe9e7; color: #b3362a; }
+  .tag.green { background: #e5f4e9; color: #1d7a3a; }
+  figure { margin: 1.5rem 0; }
+  figcaption { text-align: center; color: var(--muted); font-size: 0.88rem; margin-top: 0.4rem; }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  a { color: var(--accent); }
+  .diagram-wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<h1>Attempt 4: Apple Containers + pi + LM Studio + hunk</h1>
+<p class="subtitle">Proposal &middot; 2026-07-23 (rev 2: plain containers, current-directory-only mount) &middot; gopher-hole work session</p>
+
+<h2>Background</h2>
+
+<p>gopher-hole is an exercise in operating isolated, safe coding agents. Three attempts precede this one:</p>
+
+<table>
+  <tr><th>Attempt</th><th>Isolation layer</th><th>Verdict</th></tr>
+  <tr>
+    <td><code>attempt-001-docker</code></td>
+    <td>Docker container</td>
+    <td>Works, but the audit found the firewall self-controlled (<code>NET_ADMIN</code>), the agent running as root, DNS wide open, and only a shared-kernel boundary.</td>
+  </tr>
+  <tr>
+    <td><code>attempt-002-lima</code></td>
+    <td>Lima VM (vz + VirtioFS)</td>
+    <td>Separate guest kernel, nftables allowlist a non-root agent can't touch, DNS via the host-agent only. Strongest local isolation so far.</td>
+  </tr>
+  <tr>
+    <td><code>attempt-003-cloud</code></td>
+    <td>Disposable cloud VM (AWS/DO)</td>
+    <td>Off-host entirely; rsync sync-back workflow. Strong isolation, but latency, cost, and cloud credentials in play.</td>
+  </tr>
+</table>
+
+<p>Attempt 4 changes three things at once:</p>
+
+<ol>
+  <li><strong>Isolation layer:</strong> plain containers from Apple's open-source <a href="https://github.com/apple/container"><code>container</code></a> tool. Its core design property is that <em>every container runs in its own lightweight VM</em> — a real hypervisor boundary with a separate guest kernel, unlike Docker's shared-kernel namespaces. This lands at attempt-001's ergonomics (image + run script + single project bind mount) with attempt-002's isolation properties, and directly fixes attempt-001's audited weaknesses: in-guest firewall rules live in a separate kernel, and the agent runs as a non-root user. This host runs macOS&nbsp;26.5 with container CLI 1.1.0, so full networking is available.</li>
+  <li><strong>Harness + model:</strong> the <a href="https://github.com/badlogic/pi-mono">pi coding agent</a> talking to <strong>LM Studio running on the host</strong> at <code>http://localhost:1234</code> (an OpenAI-compatible endpoint). This is a notable shift in the threat model: <em>no API key ever enters the guest, and model traffic never leaves the container&harr;host boundary</em>. The only internet egress an agent session needs is git and the Go module proxy.</li>
+  <li><strong>Review tool:</strong> <a href="https://github.com/modem-dev/hunk">hunk</a> (a terminal diff TUI built specifically for reviewing agent-authored changesets) installed in the container alongside git.</li>
+</ol>
+
+<div class="callout">
+<strong>Why not container <em>machines</em>?</strong> An earlier revision of this proposal used <code>container machine</code> (systemd-booted VMs with home-directory sharing). Verified against CLI 1.1.0: machines share the <em>entire</em> <code>$HOME</code> or nothing (<code>--home-mount ro|rw|none</code>) — there is no per-directory option — which would hand the agent your whole home directory, <code>~/.ssh</code> included. Plain <code>container run</code> supports <code>-v/--volume</code> bind mounts of arbitrary single directories and offers the identical VM-per-container isolation. Machines' only other additions (systemd init, host-user mapping) aren't needed here: pi and hunk are ordinary processes. So: plain containers, sharing <strong>only the current project directory</strong>.
+</div>
+
+<p><em>A note on sources:</em> pi.dev is not fetchable from this environment, so all pi details below come from the GitHub monorepo (<code>packages/coding-agent/README.md</code> and <code>docs/models.md</code>), which documents install, provider configuration, and headless operation.</p>
+
+<h2>Architecture</h2>
+
+<figure>
+<div class="diagram-wrap">
+<svg viewBox="0 0 880 430" width="880" height="430" role="img" aria-label="Architecture diagram">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto">
+      <polygon points="0 0, 9 3.5, 0 7" fill="#444"/>
+    </marker>
+    <marker id="arrowrev" markerWidth="9" markerHeight="7" refX="1" refY="3.5" orient="auto">
+      <polygon points="9 0, 0 3.5, 9 7" fill="#444"/>
+    </marker>
+  </defs>
+
+  <!-- Host box -->
+  <rect x="20" y="45" width="380" height="355" rx="10" fill="#f2f7f5" stroke="#0b6e4f" stroke-width="1.6"/>
+  <text x="210" y="72" text-anchor="middle" font-size="15" font-weight="600" fill="#0b6e4f">Host — macOS 26 (Apple Silicon)</text>
+
+  <rect x="55" y="95" width="230" height="72" rx="7" fill="#ffffff" stroke="#8aa89b"/>
+  <text x="170" y="122" text-anchor="middle" font-size="13.5" font-weight="600">LM Studio server</text>
+  <text x="170" y="141" text-anchor="middle" font-size="12" fill="#5c6570">OpenAI-compatible API :1234</text>
+  <text x="170" y="157" text-anchor="middle" font-size="12" fill="#5c6570">(bound to vmnet, not just loopback)</text>
+
+  <rect x="55" y="200" width="230" height="72" rx="7" fill="#ffffff" stroke="#8aa89b"/>
+  <text x="170" y="226" text-anchor="middle" font-size="13.5" font-weight="600">Project directory ($PWD)</text>
+  <text x="170" y="245" text-anchor="middle" font-size="12" fill="#5c6570">edited with host IDE / tools</text>
+  <text x="170" y="262" text-anchor="middle" font-size="12" fill="#5c6570">rest of $HOME stays private</text>
+
+  <rect x="55" y="305" width="230" height="60" rx="7" fill="#ffffff" stroke="#8aa89b"/>
+  <text x="170" y="331" text-anchor="middle" font-size="13.5" font-weight="600">container CLI + apiserver</text>
+  <text x="170" y="350" text-anchor="middle" font-size="12" fill="#5c6570">image builds, container lifecycle</text>
+
+  <!-- Container box -->
+  <rect x="480" y="45" width="380" height="355" rx="10" fill="#f4f4fa" stroke="#4a4a8a" stroke-width="1.6"/>
+  <text x="670" y="72" text-anchor="middle" font-size="15" font-weight="600" fill="#3d3d7a">Disposable container “gopher-hole”</text>
+  <text x="670" y="90" text-anchor="middle" font-size="12" fill="#5c6570">own lightweight VM · Ubuntu 24.04 · non-root user</text>
+
+  <rect x="595" y="105" width="230" height="62" rx="7" fill="#ffffff" stroke="#9a9ab8"/>
+  <text x="710" y="131" text-anchor="middle" font-size="13.5" font-weight="600">pi coding agent</text>
+  <text x="710" y="150" text-anchor="middle" font-size="12" fill="#5c6570">models.json → openai-completions</text>
+
+  <rect x="595" y="200" width="230" height="72" rx="7" fill="#ffffff" stroke="#9a9ab8"/>
+  <text x="710" y="226" text-anchor="middle" font-size="13.5" font-weight="600">$PWD (bind mount)</text>
+  <text x="710" y="245" text-anchor="middle" font-size="12" fill="#5c6570">same absolute path as host —</text>
+  <text x="710" y="262" text-anchor="middle" font-size="12" fill="#5c6570">only this directory is shared</text>
+
+  <rect x="595" y="298" width="230" height="72" rx="7" fill="#ffffff" stroke="#9a9ab8"/>
+  <text x="710" y="321" text-anchor="middle" font-size="13.5" font-weight="600">Toolchain</text>
+  <text x="710" y="340" text-anchor="middle" font-size="12" fill="#5c6570">git · hunk · Go 1.26 · Node 22</text>
+  <text x="710" y="357" text-anchor="middle" font-size="12" fill="#5c6570">python3 · perl</text>
+
+  <!-- HTTP arrow: pi -> LM Studio -->
+  <line x1="595" y1="131" x2="290" y2="131" stroke="#444" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="442" y="120" text-anchor="middle" font-size="12" fill="#333">HTTP :1234 via vmnet gateway</text>
+  <text x="442" y="152" text-anchor="middle" font-size="11.5" fill="#5c6570">(e.g. 192.168.64.1 — detected, not hardcoded)</text>
+
+  <!-- Project dir share arrow -->
+  <line x1="290" y1="232" x2="595" y2="232" stroke="#444" stroke-width="1.6" marker-end="url(#arrow)" marker-start="url(#arrowrev)"/>
+  <text x="442" y="221" text-anchor="middle" font-size="12" fill="#333">-v "$PWD:$PWD" (rw)</text>
+  <text x="442" y="253" text-anchor="middle" font-size="11.5" fill="#5c6570">host edits visible live in guest, and vice-versa</text>
+
+  <!-- lifecycle arrow -->
+  <line x1="290" y1="335" x2="480" y2="335" stroke="#444" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#arrow)"/>
+  <text x="385" y="324" text-anchor="middle" font-size="12" fill="#333">container run --rm -it</text>
+</svg>
+</div>
+<figcaption>All model traffic stays on the host. Only the project directory crosses the boundary; the container's required internet egress is just git and the Go module proxy.</figcaption>
+</figure>
+
+<h2>Approach</h2>
+
+<p>Create <code>attempt-004-apple-container/</code> following the shape of attempt-001 (image + launcher script) with attempt-002's documentation discipline, plus a smoke-test script standing in for unit tests, since this is infrastructure rather than application code:</p>
+
+<table>
+  <tr><th>File</th><th>Purpose</th></tr>
+  <tr><td><code>Dockerfile</code></td><td>Container image: Ubuntu 24.04 plus git, curl, jq, python3, perl, Go 1.26, Node 22, <code>@earendil-works/pi-coding-agent</code>, <code>hunkdiff</code>; non-root <code>agent</code> user. No systemd — nothing here needs an init system.</td></tr>
+  <tr><td><code>entrypoint.sh</code></td><td>Runs <code>setup-pi.sh</code> (below) then <code>exec</code>s the session command. In the optional hardening phase it grows a root stage that installs nftables rules before dropping to <code>agent</code>.</td></tr>
+  <tr><td><code>setup-pi.sh</code></td><td>In-guest: detects the vmnet gateway IP, queries LM Studio's <code>/v1/models</code>, and generates pi's <code>models.json</code> if it's missing or stale.</td></tr>
+  <tr><td><code>run.sh</code></td><td>Host-side launcher: resolve the project dir, mount <em>only</em> that directory (at the same absolute path) plus a dedicated pi-state dir, forward git identity, exec pi or a given command.</td></tr>
+  <tr><td><code>Makefile</code></td><td><code>image</code> (build), <code>verify</code> (run <code>verify.sh</code>), <code>clean</code> (remove image + stray containers). Lifecycle is per-session via <code>run.sh</code>, so no start/stop targets are needed.</td></tr>
+  <tr><td><code>verify.sh</code></td><td>Smoke-test assertions per phase — the red/green driver for this work.</td></tr>
+  <tr><td><code>README.md</code></td><td>Usage, LM Studio setup, comparison to prior attempts, risks.</td></tr>
+</table>
+
+<h3>Container image</h3>
+
+<p>With no init system required, the image is a straightforward toolbox:</p>
+
+<pre><code># Sketch — final version lands in attempt-004-apple-container/Dockerfile
+FROM ubuntu:24.04
+RUN apt-get update &amp;&amp; apt-get install -y \
+      curl ca-certificates git jq ripgrep python3 perl iproute2 \
+    &amp;&amp; apt-get clean &amp;&amp; rm -rf /var/lib/apt/lists/*
+# iproute2: setup-pi.sh detects the host gateway with `ip route`
+# (stock ubuntu:24.04 doesn't include it — spike finding)
+
+# Go 1.26 from the official tarball (apt's golang is stale) — arm64, since
+# containers on Apple Silicon run linux/arm64
+ARG GO_VERSION=1.26  # pin the exact patch release at implementation time
+RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-arm64.tar.gz" | tar -C /usr/local -xz
+ENV PATH="/usr/local/go/bin:${PATH}"
+
+# Node 22 (needed by pi and hunk), then the two npm tools
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    &amp;&amp; apt-get install -y nodejs \
+    &amp;&amp; npm install -g --ignore-scripts @earendil-works/pi-coding-agent hunkdiff
+
+RUN useradd --create-home --shell /bin/bash agent
+COPY entrypoint.sh setup-pi.sh /usr/local/bin/
+USER agent
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["pi"]</code></pre>
+
+<p>On “maybe some of those come along for free”: on the <code>ubuntu:24.04</code> OCI base, only <code>perl-base</code> is guaranteed (dpkg itself depends on it) — full perl and python3 are stripped from the minimized image, so both are installed explicitly (cheap and idempotent). Go is a different story: Ubuntu's apt archive ships a stale toolchain, so 1.26 comes from the official go.dev tarball, the same pattern attempt-003's cloud-init used.</p>
+
+<h3>Wiring pi to LM Studio</h3>
+
+<p>pi reads custom providers from <code>models.json</code> under its agent dir (<code>~/.pi/agent/</code>). LM Studio speaks the OpenAI completions API, so the config is (per <code>pi-mono/docs/models.md</code>):</p>
+
+<pre><code>{
+  "providers": {
+    "lmstudio": {
+      "baseUrl": "http://192.168.64.1:1234/v1",
+      "api": "openai-completions",
+      "apiKey": "lmstudio",
+      "models": [
+        { "id": "&lt;model-id-from-/v1/models&gt;", "contextWindow": 128000, "maxTokens": 32000 }
+      ]
+    }
+  }
+}</code></pre>
+
+<p>Two guest-specific details, both handled by <code>setup-pi.sh</code> at container start:</p>
+<ul>
+  <li><strong>“localhost” means the host, from outside.</strong> Inside the container, the host is reached via the vmnet gateway. Rather than hardcoding <code>192.168.64.1</code>, detect it: <code>ip route | awk '/default/ {print $3}'</code>.</li>
+  <li><strong>Model list comes from LM Studio itself.</strong> <code>curl http://$GW:1234/v1/models</code> returns the loaded models; the script generates one <code>models.json</code> entry per model so pi's <code>--model</code> flag matches whatever is actually loaded.</li>
+</ul>
+
+<p>On the host side, LM Studio must serve on the network interface the vmnet bridge can reach — its server defaults to loopback only. That's the “Serve on Local Network” toggle in the LM Studio server settings (or the equivalent <code>lms server</code> flag).</p>
+
+<h3>Session workflow</h3>
+
+<pre><code># one-time
+make image
+
+# each session — disposable container, only the project dir shared
+./run.sh ~/code/src/github.com/some/project        # launches pi in that dir
+./run.sh ~/code/src/github.com/some/project bash   # or a plain shell
+
+# under the hood, run.sh does roughly:
+container run --rm -it \
+  --volume "$PROJECT_DIR:$PROJECT_DIR" \
+  --volume "$HOME/.pi-gopher-hole:/home/agent/.pi" \
+  --workdir "$PROJECT_DIR" \
+  --env GIT_AUTHOR_NAME=... --env GIT_AUTHOR_EMAIL=... \
+  gopher-hole "$@"
+
+# review the agent's changes — either side of the boundary works,
+# since the code tree is the same files:
+./run.sh ~/code/src/github.com/some/project hunk diff   # in-container TUI
+# ...or hunk/git/IDE on the host</code></pre>
+
+<p>Because the project directory is mounted at its host absolute path, hunk, git, and your IDE agree about file locations on both sides of the boundary. With no <code>~/.ssh</code> or <code>~/.gitconfig</code> in the container, git <em>authentication</em> deliberately stays on the host: the agent works and commits locally (identity forwarded via <code>GIT_AUTHOR_*</code>/<code>GIT_COMMITTER_*</code> env vars from host <code>git config</code>), and you push from the host after review — the same review-then-push discipline attempt-003 used.</p>
+
+<h2>Decision points</h2>
+
+<div class="decision">
+  <div class="dtitle">1. Plain containers instead of container machines <span style="color:var(--muted); font-weight:400;">(decided 2026-07-23)</span></div>
+  <p>Machines share all of <code>$HOME</code> or nothing (verified: CLI 1.1.0 offers only <code>--home-mount ro|rw|none</code>); plain <code>container run</code> supports arbitrary <code>-v</code> bind mounts with identical VM-per-container isolation. <span class="rec">Decision:</span> plain containers, mounting only the current project directory. This also removes the systemd requirement and the whole-home exposure concern from the earlier revision.</p>
+</div>
+
+<div class="decision">
+  <div class="dtitle">2. Session lifecycle: disposable per-session vs long-lived container <span style="color:var(--muted); font-weight:400;">(confirmed 2026-07-23: --rm per session)</span></div>
+  <p>A long-lived container with <code>container exec</code> would let several sessions share one guest, but keeps state you'd rather not accumulate. With <code>--rm</code>, every session gets a pristine guest, and the only state that survives is what's in the two mounts (project dir, pi state) — which is exactly the state we want to survive.</p>
+  <p><span class="rec">Recommendation:</span> <code>--rm</code> per session. Concurrent sessions on different projects are simply concurrent <code>run.sh</code> invocations, each in its own VM. Startup cost is expected to be sub-second-to-seconds (spike confirms).</p>
+</div>
+
+<div class="decision">
+  <div class="dtitle">3. Where pi state lives <span style="color:var(--muted); font-weight:400;">(confirmed 2026-07-23: dedicated mounted dir)</span></div>
+  <p>With no home share, pi's default <code>~/.pi/agent/</code> is container-local and would vanish with each <code>--rm</code>. Sessions and provider config are worth keeping.</p>
+  <p><span class="rec">Recommendation:</span> mount a dedicated host dir: <code>-v ~/.pi-gopher-hole:/home/agent/.pi</code>. pi state persists across disposable containers, is inspectable from the host, and never collides with any host-side <code>~/.pi</code>.</p>
+</div>
+
+<div class="decision">
+  <div class="dtitle">4. Egress hardening — in or out of scope?</div>
+  <p>With the model local, the container needs very little internet: git (github.com:443) plus <strong>Go module downloads</strong> cover a working session; npm/apt egress happens only at image-build time. <code>go get</code> / <code>go mod download</code> default to the module proxy, so the allowlist needs <code>proxy.golang.org</code> and <code>sum.golang.org</code> (checksum verification), plus <code>storage.googleapis.com</code> which backs the mirror — the same trio attempt-002 allowlisted. Modules that opt out of the proxy fall back to direct VCS: the github allowance covers those, and <code>bitbucket.org:443</code> is added for <code>go get</code> of Bitbucket-hosted modules. That keeps the full list small (gateway:1234; github.com, bitbucket.org, and the Go module proxy on 443) — and because each container is its own VM with the agent as a non-root user, the rules are actually trustworthy (unlike attempt-001).</p>
+  <p>Note for <em>private</em> Bitbucket modules: those require <code>GOPRIVATE=bitbucket.org/...</code> (skip proxy and checksum db) and read credentials in the guest, which intersects with the no-credentials decision below — the documented escape hatch is a read-only app password or deploy key scoped to fetch, supplied per-session as an env var, never baked into the image.</p>
+  <p><span class="rec">Recommendation:</span> include it as an explicitly optional final phase (Phase 6). MVP first; don't block the workflow validation on firewall plumbing. The entrypoint gains a root stage (set rules, then drop to <code>agent</code> via <code>setpriv</code>) — attempt-001's pattern, now effective.</p>
+</div>
+
+<h2>Trade-offs and open questions</h2>
+
+<table>
+  <tr><th>Item</th><th>Assessment</th></tr>
+  <tr>
+    <td>Guest&rarr;host reachability</td>
+    <td><strong>Resolved by spike (2026-07-23).</strong> The vmnet gateway (192.168.64.1) routes to the host: with LM Studio's “Serve on Local Network” enabled, the guest retrieves the model list from <code>http://$GW:1234</code>. With loopback-only binding the connection is refused, confirming the toggle is load-bearing.</td>
+  </tr>
+  <tr>
+    <td>Bind-mount ownership (uid/gid)</td>
+    <td><strong>Resolved by spike (2026-07-23).</strong> virtiofs maps ownership transparently in both directions: host files appear owned by the running container user (verified at uid 0 and uid 1000), and guest-created files land on the host owned by the host user. No uid-matching workaround needed.</td>
+  </tr>
+  <tr>
+    <td>LM Studio LAN exposure</td>
+    <td>Serving on non-loopback means other devices on the LAN can reach the model server. Mitigation options: macOS application firewall, or restricting LM Studio to the vmnet subnet if it supports interface binding. Documented in the README; acceptable for a dev machine on a trusted network.</td>
+  </tr>
+  <tr>
+    <td>No credentials in the guest</td>
+    <td>Deliberate: no <code>~/.ssh</code>, no <code>~/.gitconfig</code>, no API keys. The cost is that <code>git push</code>/<code>pull</code> against remotes happens on the host, not in-session. That matches the repo's review-then-push philosophy; if in-guest fetch becomes annoying (e.g. <code>go get</code> of private Bitbucket modules), a read-only deploy key or app password supplied per-session is the escape hatch (documented, not built).</td>
+  </tr>
+  <tr>
+    <td>Local model capability</td>
+    <td>pi's usefulness depends on the loaded model's tool-calling quality. That's an LM Studio-side choice, out of this repo's scope, but the smoke test (Phase 3) uses a trivially verifiable prompt so harness problems aren't confused with model problems.</td>
+  </tr>
+  <tr>
+    <td>Feature maturity</td>
+    <td>apple/container is a young tool; CLI flags may shift between releases. Every <code>container</code> invocation lives in <code>run.sh</code>/<code>Makefile</code>, so adaptation is localized. CLI 1.1.0's flag set for <code>run</code> (<code>-v</code>, <code>--mount</code>, <code>-w</code>, <code>-e</code>, <code>-u</code>, <code>--rm</code>, <code>-d</code>) was verified directly on 2026-07-23.</td>
+  </tr>
+  <tr>
+    <td>TUI over <code>container run -it</code></td>
+    <td>hunk and interactive pi need a proper TTY. Expected to work; confirmed in the spike.</td>
+  </tr>
+  <tr>
+    <td>Git hook / build-script poisoning</td>
+    <td>Same residual risks as every prior attempt with a shared tree: <code>.git/hooks</code> written in the guest execute if git runs on the host, and poisoned Makefiles execute wherever they're run. Host-side <code>core.hooksPath</code> mitigation carries over from attempt-002's README.</td>
+  </tr>
+</table>
+
+<h2>Implementation checklist</h2>
+
+<p>Infrastructure work rather than application code, so the red/green cycle runs through <code>verify.sh</code>: each phase first adds a failing assertion (<span class="tag red">RED</span>), then the piece that makes it pass (<span class="tag green">GREEN</span>). Phase 0 is a manual spike — its findings can amend this proposal before anything is built. (CLI presence, version 1.1.0, and the flag sets for <code>machine create</code> and <code>run</code> were already verified during proposal drafting.)</p>
+
+<div class="phase">
+<h3>Phase 0 — Spike: validate the load-bearing assumptions</h3>
+<ul class="tasks">
+  <li><input type="checkbox" checked> <code>container system start</code> succeeds; <code>container run --rm -it ubuntu:24.04 bash</code> gives an interactive shell with a working TTY (arrow keys, full-screen apps). <em>Result: apiserver responds (though <code>system status</code> misreports launchd state under the sandboxed shell); guest kernel 6.18.15 confirms VM-per-container; <code>-t</code> allocates <code>/dev/pts/0</code>. Full-screen interactivity gets implicit validation at first real session.</em></li>
+  <li><input type="checkbox" checked> Bind-mount check: <code>container run --rm -it -v "$PWD:$PWD" -w "$PWD" ubuntu:24.04 bash</code> — files visible both directions, live; note the uid/gid of guest-created files as seen from the host, and of host files as seen from the guest. <em>Result: bidirectional visibility confirmed; virtiofs maps ownership transparently — host files appear owned by the container user (tested uid 0 and uid 1000), guest-created files land on the host owned by the host user (501). No uid-matching workaround needed.</em></li>
+  <li><input type="checkbox" checked> On the host: start the LM Studio server on :1234 with “Serve on Local Network” enabled. <em>Result: done; with loopback-only binding the guest got connection-refused, confirming the toggle is required.</em></li>
+  <li><input type="checkbox" checked> In the guest: <code>GW=$(ip route | awk '/default/ {print $3}')</code>, then <code>curl http://$GW:1234/v1/models</code> returns the model list. <strong>This is the go/no-go check for the whole approach.</strong> <em>Result: PASS — gateway 192.168.64.1 serves the model list. Note: stock ubuntu:24.04 lacks <code>iproute2</code>; the gateway is parsed from <code>/proc/net/route</code> or iproute2 gets installed in our image (it is).</em></li>
+  <li><input type="checkbox" checked> Measure cold container startup time (<code>--rm</code> lifecycle viability). <em>Result: ~0.6s wall-clock for <code>container run --rm ubuntu:24.04 true</code> with the image cached — disposable per-session containers are effectively free.</em></li>
+  <li><input type="checkbox" checked> Record findings; amend this proposal if anything failed (especially uid mapping → may add a <code>--uid</code>/build-arg fix to Phase 1). <em>Result: all checks passed; both open-question rows above are resolved; the only amendment is adding <code>iproute2</code> to the image.</em></li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 1 — Container image</h3>
+<ul class="tasks">
+  <li><input type="checkbox" checked> <span class="tag red">RED</span> Write <code>verify.sh</code> with a <code>verify_image</code> section: image <code>gopher-hole</code> exists; <code>container run --rm gopher-hole &lt;tool&gt; --version</code> succeeds for <code>git</code>, <code>node</code>, <code>pi</code>, <code>hunk</code>, <code>jq</code>, <code>python3</code>, and <code>perl</code>; <code>go version</code> reports 1.26; <code>whoami</code> reports <code>agent</code>. Run it — fails (no image). <em>Result: 11/11 checks fail, exit 1 — red for the right reason.</em></li>
+  <li><input type="checkbox" checked> <span class="tag green">GREEN</span> Write <code>Dockerfile</code> (apt tools + Go 1.26 tarball + Node 22 + npm installs + non-root <code>agent</code> user) and the <code>make image</code> target. Build; <code>verify.sh</code> image section passes. (Entrypoint scripts may be stubs that just <code>exec "$@"</code> at this stage.) <em>Result: 11/11 green; Go pinned at 1.26.5.</em></li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 2 — pi ⇄ LM Studio wiring</h3>
+<ul class="tasks">
+  <li><input type="checkbox" checked> <span class="tag red">RED</span> Add <code>verify_pi</code>: <code>container run --rm -v ~/.pi-gopher-hole:/home/agent/.pi gopher-hole pi -p 'Reply with exactly: PONG' --no-session</code> exits 0 and the output contains <code>PONG</code>. Run — fails (no provider configured). <em>Result: red for the right reason — “No API key found for the selected model.”</em></li>
+  <li><input type="checkbox" checked> <span class="tag green">GREEN</span> Write <code>setup-pi.sh</code> (detect gateway, curl <code>/v1/models</code>, generate <code>models.json</code> with one entry per loaded model, pick a default model) and <code>entrypoint.sh</code> (run setup, <code>exec "$@"</code>). Rebuild; verification passes. <em>Result: pi answered PONG via qwen through the gateway; defaults pinned in settings.json via <code>defaultProvider</code>/<code>defaultModel</code> (schema confirmed from pi's bundled docs); embedding models excluded; <code>LMSTUDIO_PORT</code>/<code>LMSTUDIO_DEFAULT_MODEL</code> env overrides supported.</em></li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 3 — Session launcher</h3>
+<ul class="tasks">
+  <li><input type="checkbox" checked> <span class="tag red">RED</span> Add <code>verify_run</code>: <code>./run.sh &lt;dir&gt; pwd</code> prints the host absolute path (proving the same-path mount and workdir); a guest-created file appears in the host dir; <code>./run.sh &lt;dir&gt; git config user.email</code> matches the host's. Run — fails (no script). <em>Result: 3/3 red. Deviation: the identity check uses <code>git var GIT_AUTHOR_IDENT</code> instead of <code>git config user.email</code>, since env-var identity (<code>GIT_AUTHOR_*</code>) is invisible to <code>git config</code>.</em></li>
+  <li><input type="checkbox" checked> <span class="tag green">GREEN</span> Write <code>run.sh</code> in the style of attempt-002: resolve project dir, mount it at the same path plus the pi-state dir, forward <code>GIT_AUTHOR_*</code>/<code>GIT_COMMITTER_*</code> from host git config, <code>--workdir</code>, exec pi (default) or the given command. Verification passes. <em>Result: 3/3 green; TTY flags are added only when stdin is a terminal so the same script serves interactive sessions and scripted checks.</em></li>
+  <li><input type="checkbox"> Manual: run an interactive pi session against a real project; confirm edits land in the host tree live and host-side edits are visible mid-session.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 4 — hunk review workflow</h3>
+<ul class="tasks">
+  <li><input type="checkbox"> In a scratch repo, have pi make a small change; review with <code>./run.sh &lt;dir&gt; hunk diff</code> — TUI renders and navigates correctly.</li>
+  <li><input type="checkbox"> Document the optional <code>git config core.pager "hunk pager"</code> integration in the README (set it inside the repo or on the host — there is no shared global gitconfig).</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 5 — Documentation</h3>
+<ul class="tasks">
+  <li><input type="checkbox"> Write <code>attempt-004-apple-container/README.md</code>: rationale (including the machines-vs-plain-containers decision), prerequisites (container CLI, LM Studio + network serving), usage, comparison table vs attempts 1–3, risks/mitigations (LAN exposure, hook poisoning + <code>core.hooksPath</code>, credentials-stay-on-host workflow).</li>
+  <li><input type="checkbox"> Run the full <code>verify.sh</code> end-to-end from a clean slate (<code>make clean</code> → <code>make image</code> → <code>make verify</code>) to prove the README's instructions.</li>
+</ul>
+</div>
+
+<div class="phase">
+<h3>Phase 6 (optional) — Egress hardening</h3>
+<ul class="tasks">
+  <li><input type="checkbox"> <span class="tag red">RED</span> Add <code>verify_firewall</code>: in-guest <code>curl https://example.com</code> fails; <code>curl http://$GW:1234/v1/models</code>, <code>git ls-remote https://github.com/...</code>, <code>git ls-remote https://bitbucket.org/...</code> (a public repo), and <code>go mod download</code> in a scratch module (exercising proxy.golang.org + sum.golang.org) all succeed. Run — fails (no rules).</li>
+  <li><input type="checkbox"> <span class="tag green">GREEN</span> Port attempt-002's <code>init-firewall.sh</code> into <code>entrypoint.sh</code> as a root stage: nftables default-drop with allowances for gateway:1234 and, on 443, github.com, bitbucket.org, proxy.golang.org, sum.golang.org, and storage.googleapis.com (plus DNS as required), then drop to <code>agent</code> via <code>setpriv</code> (image switches from <code>USER agent</code> to root entry + privilege drop). Verification passes.</li>
+</ul>
+</div>
+
+<h2>References</h2>
+<ul>
+  <li><a href="https://github.com/apple/container">apple/container</a> — plain-container CLI (flags verified locally against v1.1.0); <a href="https://github.com/apple/container/blob/main/docs/container-machine.md">container-machine.md</a> for the rejected machines approach</li>
+  <li><a href="https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/README.md">pi coding agent — README</a> and <a href="https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/models.md">docs/models.md</a> (custom provider format)</li>
+  <li><a href="https://github.com/modem-dev/hunk">modem-dev/hunk</a></li>
+  <li>Prior art in-repo: <code>attempt-001-docker/</code> (ergonomic template), <code>attempt-002-lima/</code> (firewall + docs template), <code>doc/work-sessions/2026/2026-04-01_15-07-23-research-local-vm-isolation.md</code> (§8 anticipated Apple containers)</li>
+</ul>
+
+</body>
+</html>
