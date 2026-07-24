@@ -89,17 +89,22 @@ worth keeping. Concurrent sessions on different projects are just concurrent
 Environment overrides for `run.sh`:
 
 | Variable                 | Effect                                          |
-|--------------------------|--------------------------------------------------|
+|--------------------------|-------------------------------------------------|
 | `LMSTUDIO_PORT`          | Host port LM Studio serves on (default: 1234)   |
 | `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed) |
 
 ## Model wiring
 
 At container start, `setup-pi.sh` detects the vmnet gateway (the host) from
-the guest's default route, queries LM Studio's `/v1/models`, and regenerates
-`models.json` with one entry per loaded chat model — so pi's model list always
-matches what LM Studio actually has loaded. `defaultProvider`/`defaultModel`
-are pinned in pi's `settings.json` without clobbering other settings.
+the guest's default route, queries LM Studio's native REST API
+(`/api/v0/models`), and regenerates `models.json` with one entry per chat
+model — so pi's model list always matches what LM Studio actually has loaded.
+Each model's `contextWindow` is set dynamically: `loaded_context_length`
+(the enforceable limit for a currently loaded model) when available, else
+the model's `max_context_length`, else 128000. If the native API is
+unavailable (older LM Studio), it falls back to the OpenAI-compat
+`/v1/models` with the 128000 default. `defaultProvider`/`defaultModel` are
+pinned in pi's `settings.json` without clobbering other settings.
 
 ## Reviewing changes with hunk
 
