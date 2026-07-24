@@ -14,6 +14,8 @@
 # Environment (optional):
 #   LMSTUDIO_PORT           host port LM Studio serves on (default 1234)
 #   LMSTUDIO_DEFAULT_MODEL  model id pi should default to
+#   EGRESS_ALLOW_VCS=1      also allow in-guest git/go get (default: LM Studio
+#                           only — commits and fetches happen on the host)
 set -euo pipefail
 
 IMAGE="gopher-hole"
@@ -39,6 +41,20 @@ GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
 [[ -n "$GIT_EMAIL" ]] && ENV_ARGS+=(--env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}" --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}")
 [[ -n "${LMSTUDIO_PORT:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_PORT=${LMSTUDIO_PORT}")
 [[ -n "${LMSTUDIO_DEFAULT_MODEL:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_DEFAULT_MODEL=${LMSTUDIO_DEFAULT_MODEL}")
+[[ -n "${EGRESS_ALLOW_VCS:-}" ]] && ENV_ARGS+=(--env "EGRESS_ALLOW_VCS=${EGRESS_ALLOW_VCS}")
+
+# Mount this repo's .git read-only: the agent edits the working tree freely,
+# but cannot write commits, config, hooks, or filters — closing the vector
+# where poisoned git metadata would execute when you run git on the host.
+# Commits and pushes happen on the host. Only a single top-level .git dir is
+# protected; see README for the multi-repo case.
+GIT_MOUNT=()
+GIT_DIR_PATH="${PROJECT_DIR}/.git"
+if [[ -d "$GIT_DIR_PATH" ]]; then
+  GIT_MOUNT+=(--volume "${GIT_DIR_PATH}:${GIT_DIR_PATH}:ro")
+elif [[ -e "$GIT_DIR_PATH" ]]; then
+  echo "note: ${GIT_DIR_PATH} is a file (worktree/submodule) — read-only .git protection skipped." >&2
+fi
 
 # Allocate a TTY only when we have one (verify.sh runs without)
 TTY_ARGS=()
@@ -50,6 +66,7 @@ exec container run --rm \
   --cap-add CAP_NET_ADMIN \
   ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
   --volume "${PROJECT_DIR}:${PROJECT_DIR}" \
+  ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"} \
   --volume "${PI_STATE_DIR}:/home/agent/.pi" \
   --workdir "${PROJECT_DIR}" \
   ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \

@@ -18,6 +18,11 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 RUN useradd --create-home --shell /bin/bash agent
 
+# The mounted repo is host-owned (and .git rides in as a separate read-only
+# mount), so git's ownership guard would refuse to operate. Trust any dir —
+# safe in this throwaway single-purpose guest.
+RUN git config --system --add safe.directory '*'
+
 COPY entrypoint.sh setup-pi.sh init-firewall.sh /usr/local/bin/
 
 # Entry starts as root to install nftables rules, then setpriv-drops to

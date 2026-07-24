@@ -48,7 +48,7 @@ project dir      ←── -v "$PWD:$PWD" ────→  same path inside gues
 |--------------------|-----------------------------------------------------------------|
 | `Dockerfile`       | Toolbox image: git, hunk, pi, Go 1.26, Node 22, python3, perl   |
 | `entrypoint.sh`    | Root stage: firewall, drop to `agent`; then pi setup + hand-off |
-| `init-firewall.sh` | nftables default-drop egress allowlist (guest kernel)           |
+| `init-firewall.sh` | nftables default-drop egress; LM Studio only (VCS opt-in)       |
 | `setup-pi.sh`      | In-guest: detects gateway, generates pi's `models.json`         |
 | `run.sh`           | Host-side session launcher                                      |
 | `Makefile`         | `image`, `verify`, `clean` targets                              |
@@ -88,10 +88,43 @@ worth keeping. Concurrent sessions on different projects are just concurrent
 
 Environment overrides for `run.sh`:
 
-| Variable                 | Effect                                          |
-|--------------------------|-------------------------------------------------|
-| `LMSTUDIO_PORT`          | Host port LM Studio serves on (default: 1234)   |
-| `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed) |
+| Variable                 | Effect                                                        |
+|--------------------------|--------------------------------------------------------------|
+| `LMSTUDIO_PORT`          | Host port LM Studio serves on (default: 1234)                |
+| `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed)             |
+| `EGRESS_ALLOW_VCS=1`     | Also allow in-guest `git`/`go get` (default: LM Studio only) |
+
+## Session posture: read-only `.git` + locked-down egress
+
+Two defenses apply automatically to every `run.sh` session:
+
+- **Read-only `.git`.** The repo's `.git` directory is mounted read-only, so
+  the agent edits the working tree freely but cannot write commits, config,
+  hooks, or filter drivers. This closes the vector where poisoned git metadata
+  would execute when *you* run git on the host. You author commits and push
+  from the host after review — the working-tree changes are plain files, so
+  host `git status`/`git diff` see them normally.
+- **Locked-down egress.** By default the only reachable network destination is
+  LM Studio on the host gateway. Git and `go get` are expected to run on the
+  host, so no VCS/DNS egress is allowed (this also closes the DNS-query
+  exfiltration channel). Set `EGRESS_ALLOW_VCS=1` to re-enable in-guest
+  `git`/`go get` against github, bitbucket, and the Go module proxy.
+
+Because `go build`/`go test` inside the guest cannot fetch uncached modules
+under the default lockdown, pre-fetch on the host (`go mod download`) or run
+with `EGRESS_ALLOW_VCS=1` for build-heavy sessions.
+
+### Single-repo vs. a tree of repos
+
+The read-only `.git` protection covers **one** top-level `.git` directory —
+i.e. `./run.sh` pointed at a single project. If you point it at a parent
+directory containing several repos, only egress protects you, not the mount:
+each nested `.git` stays writable, and any repo the agent creates mid-session
+is unprotected regardless. Prefer one repo per session; if you must share a
+tree, rely on the locked-down egress and review every diff on the host before
+running git there. A `.git` *file* (submodule/linked worktree) can't be
+protected this way either — `run.sh` prints a note and skips the read-only
+mount in that case.
 
 ## Model wiring
 
@@ -113,17 +146,15 @@ pinned in pi's `settings.json` without clobbering other settings.
 ```
 
 Optionally, make hunk the default git pager so `git diff`/`git show` inside
-the container open the TUI automatically. There is no shared global gitconfig
-(by design — no `~/.gitconfig` enters the guest), so set it **per repository**,
-which persists because the project directory lives on the host:
+the container open the TUI automatically. Because `.git` is mounted read-only,
+set this **on the host** (it writes `.git/config`, which the guest cannot):
 
 ```bash
-./run.sh ~/src/myproject bash
-git config core.pager "hunk pager"
+git -C ~/src/myproject config core.pager "hunk pager"
 ```
 
-Note that this also affects git on the host (same repo, same config file);
-if you'd rather keep host git untouched, skip the config and invoke
+The setting then applies to git both on the host and in the guest (same repo,
+same config file). If you'd rather keep host git untouched, skip it and invoke
 `hunk diff` explicitly.
 
 ## Comparison to prior attempts
@@ -131,9 +162,10 @@ if you'd rather keep host git untouched, skip the config and invoke
 | Concern              | 001 Docker            | 002 Lima              | 003 Cloud          | 004 Apple Containers    |
 |----------------------|-----------------------|-----------------------|--------------------|-------------------------|
 | Kernel isolation     | Shared host kernel    | Separate guest kernel | Separate machine   | Separate kernel per VM  |
-| Filesystem exposure  | Project dir           | All of `~/src`        | rsync'd copy       | Project dir only        |
+| Filesystem exposure  | Project dir           | All of `~/src`        | rsync'd copy       | Project dir (`.git` ro) |
 | API key in guest     | Yes                   | Yes                   | Yes                | **No key exists**       |
 | Model traffic        | Internet              | Internet              | Internet           | Host-local only         |
+| Default egress       | Allowlist             | Allowlist             | Open               | LM Studio only          |
 | Session startup      | ~1s                   | Minutes (VM boot)     | Minutes (provision)| ~0.6s                   |
 | Credentials in guest | Optional mounts       | Via shared home       | SSH agent forward  | None                    |
 
@@ -142,23 +174,28 @@ if you'd rather keep host git untouched, skip the config and invoke
 - **LM Studio LAN exposure.** “Serve on Local Network” binds all interfaces,
   so other devices on your LAN can reach the model server. Acceptable on a
   trusted network; otherwise restrict with the macOS application firewall.
-- **Git hook / build-script poisoning.** Unchanged from prior attempts: the
-  agent can write `.git/hooks/` and Makefiles in the shared project dir, and
-  those execute if you run git/make on the host. Mitigation:
-  `git config --global core.hooksPath ~/.git-hooks` on the host, and review
-  build-file diffs (hunk!) before running anything.
-- **Egress allowlist.** Sessions launched via `run.sh` get a default-drop
-  nftables policy in the guest kernel allowing only: LM Studio via the
-  gateway, DNS via the gateway resolver, and HTTPS to github.com,
-  bitbucket.org, and the Go module proxy. `run.sh` passes
-  `--cap-add CAP_NET_ADMIN` so the entrypoint's root stage can install the
-  rules — safe because the capability governs only this container's own VM
-  kernel, and `setpriv` strips it before the agent user runs (the agent
-  cannot flush or even read the ruleset — unlike attempt-001, where the same
-  capability against a shared kernel was the top audit finding). Residual
-  risk shared with attempt-002: DNS query names to the gateway resolver
-  remain an exfiltration channel, and allowlisted hosts (github) are
-  themselves exfiltration targets.
+- **Git metadata poisoning.** Largely closed by the read-only `.git` mount
+  (see above): the agent cannot write hooks, config, or filter drivers for a
+  single-repo session. Two residues remain: build scripts (Makefiles,
+  `go generate`) in the working tree still execute if you run them on the
+  host — review build-file diffs in `hunk` first — and the read-only mount
+  does not cover a tree of repos or mid-session `git init` (see the
+  multi-repo note above). Belt-and-suspenders: keep
+  `git config --global core.hooksPath ~/.git-hooks` on the host.
+- **Egress lockdown.** Sessions get a default-drop nftables policy in the
+  guest kernel; by default only LM Studio via the gateway is reachable (no
+  git, no DNS — so no DNS-query exfiltration either). `EGRESS_ALLOW_VCS=1`
+  widens it to DNS + github/bitbucket/Go proxy for in-guest fetches, at which
+  point DNS query names and allowlisted hosts become exfiltration channels
+  again (the attempt-002 residual). `run.sh` passes `--cap-add CAP_NET_ADMIN`
+  so the entrypoint's root stage can install the rules — safe because the
+  capability governs only this container's own VM kernel, and `setpriv`
+  strips it before the agent user runs (the agent cannot flush or even read
+  the ruleset — unlike attempt-001, where the same capability against a
+  shared kernel was the top audit finding).
+- **`safe.directory=*` in the guest.** The image trusts any repo ownership so
+  git works on the host-owned mount. This only affects the throwaway guest;
+  no host git config is changed.
 - **No credentials in the guest (by design).** `git push`/`pull` against
   remotes happens on the host after review. For `go get` of private modules,
   supply a read-only app password per-session as an env var if ever needed.

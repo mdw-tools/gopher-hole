@@ -76,27 +76,51 @@ verify_run() {
 }
 
 verify_firewall() {
-  section "firewall: default-drop egress with allowlist"
+  section "firewall: locked-down egress (LM Studio only by default)"
   # Firewalled runs mirror run.sh: CAP_NET_ADMIN for the entrypoint's root stage
-  local fw=(container run --rm --cap-add CAP_NET_ADMIN "${IMAGE}")
-  check_fails "disallowed egress blocked (example.com)" \
-    "${fw[@]}" curl -fsS --max-time 10 https://example.com
-  check "LM Studio via gateway allowed" \
-    "${fw[@]}" bash -c \
+  local locked=(container run --rm --cap-add CAP_NET_ADMIN "${IMAGE}")
+  local vcs=(container run --rm --cap-add CAP_NET_ADMIN --env EGRESS_ALLOW_VCS=1 "${IMAGE}")
+
+  # Default posture: only LM Studio reachable; git/go get happen on the host
+  check "LM Studio via gateway allowed (default)" \
+    "${locked[@]}" bash -c \
     'curl -fsS --max-time 10 "http://$(ip route | awk "/default/ {print \$3; exit}"):${LMSTUDIO_PORT:-1234}/v1/models"'
-  check "github.com allowed" \
-    "${fw[@]}" git ls-remote https://github.com/apple/container.git HEAD
-  check "bitbucket.org allowed" \
-    "${fw[@]}" git ls-remote https://bitbucket.org/atlassian/aui.git HEAD
-  check "go module proxy allowed" \
-    "${fw[@]}" bash -c \
+  check_fails "example.com blocked (default)" \
+    "${locked[@]}" curl -fsS --max-time 10 https://example.com
+  check_fails "github blocked by default" \
+    "${locked[@]}" curl -fsS --max-time 10 https://github.com
+
+  # Opt-in posture: VCS + Go proxy re-enabled for in-guest fetches
+  check "github allowed with EGRESS_ALLOW_VCS=1" \
+    "${vcs[@]}" git ls-remote https://github.com/apple/container.git HEAD
+  check "bitbucket allowed with EGRESS_ALLOW_VCS=1" \
+    "${vcs[@]}" git ls-remote https://bitbucket.org/atlassian/aui.git HEAD
+  check "go module proxy allowed with EGRESS_ALLOW_VCS=1" \
+    "${vcs[@]}" bash -c \
     'mkdir -p /tmp/scratch-mod && cd /tmp/scratch-mod && go mod init scratch >/dev/null 2>&1 && go get golang.org/x/text@latest'
+}
+
+verify_gitro() {
+  section "read-only .git: agent edits tree but cannot write git metadata"
+  local dir
+  dir=$(cd "$(mktemp -d)" && pwd -P)
+  ( cd "$dir" && git init -q && git config user.email t@t && git config user.name t \
+    && printf 'orig\n' > f.txt && git add . && git commit -qm init ) >/dev/null 2>&1
+  # Agent edits the working tree — succeeds, and the host sees it
+  ./run.sh "$dir" bash -c 'echo agent-edit >> f.txt' >/dev/null 2>&1
+  check_out "host sees working-tree edit" "f.txt" bash -c "git -C '$dir' status --short"
+  # Agent cannot write into .git (commit / hook injection blocked)
+  check_fails "agent cannot write .git metadata" \
+    ./run.sh "$dir" bash -c 'echo evil > .git/hooks/pre-commit'
+  # Read-only git inspection still works in-guest (for hunk, diffs)
+  check_out "in-guest git diff still works" "f.txt" ./run.sh "$dir" git diff --stat
+  rm -rf "$dir"
 }
 
 main() {
   local sections=("$@")
   if [[ ${#sections[@]} -eq 0 ]]; then
-    sections=(image pi run firewall)
+    sections=(image pi run firewall gitro)
   fi
   for s in "${sections[@]}"; do
     "verify_${s}"
