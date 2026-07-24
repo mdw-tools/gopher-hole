@@ -23,4 +23,4 @@ COPY entrypoint.sh setup-pi.sh /usr/local/bin/
 USER agent
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["pi"]
+CMD ["bash"]

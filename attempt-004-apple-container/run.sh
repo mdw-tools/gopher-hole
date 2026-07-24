@@ -6,9 +6,9 @@
 #   ./run.sh [PROJECT_DIR] [COMMAND...]
 #
 # Examples:
-#   ./run.sh                              # cwd, launch pi
-#   ./run.sh ~/src/myproject              # specific dir, launch pi
-#   ./run.sh ~/src/myproject bash         # specific dir, drop to bash
+#   ./run.sh                              # cwd, drop to bash
+#   ./run.sh ~/src/myproject              # specific dir, drop to bash
+#   ./run.sh ~/src/myproject pi           # specific dir, launch pi directly
 #   ./run.sh ~/src/myproject hunk diff    # review agent changes in the TUI
 #
 # Environment (optional):
@@ -22,9 +22,9 @@ PI_STATE_DIR="${HOME}/.pi-gopher-hole"
 PROJECT_DIR="${1:-$(pwd)}"
 shift || true
 
-# Default command: an interactive pi session
+# Default command: an interactive shell (launch pi from there when ready)
 if [[ $# -eq 0 ]]; then
-  set -- pi
+  set -- bash
 fi
 
 # Resolve symlinks so the host path and the in-guest mount agree exactly

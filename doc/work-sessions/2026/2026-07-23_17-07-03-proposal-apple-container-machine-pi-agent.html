@@ -289,8 +289,8 @@ CMD ["pi"]</code></pre>
 make image
 
 # each session — disposable container, only the project dir shared
-./run.sh ~/code/src/github.com/some/project        # launches pi in that dir
-./run.sh ~/code/src/github.com/some/project bash   # or a plain shell
+./run.sh ~/code/src/github.com/some/project        # drops to bash in that dir
+./run.sh ~/code/src/github.com/some/project pi     # or launch pi directly
 
 # under the hood, run.sh does roughly:
 container run --rm -it \
@@ -408,7 +408,7 @@ container run --rm -it \
 <ul class="tasks">
   <li><input type="checkbox" checked> <span class="tag red">RED</span> Add <code>verify_run</code>: <code>./run.sh &lt;dir&gt; pwd</code> prints the host absolute path (proving the same-path mount and workdir); a guest-created file appears in the host dir; <code>./run.sh &lt;dir&gt; git config user.email</code> matches the host's. Run — fails (no script). <em>Result: 3/3 red. Deviation: the identity check uses <code>git var GIT_AUTHOR_IDENT</code> instead of <code>git config user.email</code>, since env-var identity (<code>GIT_AUTHOR_*</code>) is invisible to <code>git config</code>.</em></li>
   <li><input type="checkbox" checked> <span class="tag green">GREEN</span> Write <code>run.sh</code> in the style of attempt-002: resolve project dir, mount it at the same path plus the pi-state dir, forward <code>GIT_AUTHOR_*</code>/<code>GIT_COMMITTER_*</code> from host git config, <code>--workdir</code>, exec pi (default) or the given command. Verification passes. <em>Result: 3/3 green; TTY flags are added only when stdin is a terminal so the same script serves interactive sessions and scripted checks.</em></li>
-  <li><input type="checkbox"> Manual: run an interactive pi session against a real project; confirm edits land in the host tree live and host-side edits are visible mid-session.</li>
+  <li><input type="checkbox" checked> Manual: run an interactive pi session against a real project; confirm edits land in the host tree live and host-side edits are visible mid-session. <em>Result: user-verified 2026-07-23 — TUI, agent edits landing on host, and mid-session host edits all confirmed working. Headless agent tool-calling also verified (pi created a file via its write tool through the local model). Deviation by user request: the default command with no arguments is now <code>bash</code> rather than <code>pi</code> (in both <code>run.sh</code> and the image CMD); launch pi explicitly with <code>./run.sh &lt;dir&gt; pi</code>.</em></li>
 </ul>
 </div>
 
