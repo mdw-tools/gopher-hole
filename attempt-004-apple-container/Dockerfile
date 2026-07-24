@@ -1,7 +1,7 @@
 FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y \
-      curl ca-certificates git jq ripgrep python3 perl iproute2 \
+      curl ca-certificates git jq ripgrep python3 perl iproute2 nftables \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Go from the official tarball (apt's golang is stale); arm64 because
@@ -18,9 +18,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 
 RUN useradd --create-home --shell /bin/bash agent
 
-COPY entrypoint.sh setup-pi.sh /usr/local/bin/
+COPY entrypoint.sh setup-pi.sh init-firewall.sh /usr/local/bin/
 
-USER agent
+# Entry starts as root to install nftables rules, then setpriv-drops to
+# 'agent' (see entrypoint.sh) — the agent user never has root.
 WORKDIR /home/agent
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["bash"]

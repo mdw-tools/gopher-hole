@@ -44,7 +44,10 @@ GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
 TTY_ARGS=()
 [[ -t 0 ]] && TTY_ARGS+=(-it)
 
+# CAP_NET_ADMIN lets the entrypoint's root stage install the nftables egress
+# allowlist in the guest's own kernel; setpriv strips it before the agent runs
 exec container run --rm \
+  --cap-add CAP_NET_ADMIN \
   ${TTY_ARGS[@]+"${TTY_ARGS[@]}"} \
   --volume "${PROJECT_DIR}:${PROJECT_DIR}" \
   --volume "${PI_STATE_DIR}:/home/agent/.pi" \

@@ -25,6 +25,12 @@ check() {
   if "$@" >/dev/null 2>&1; then ok "$desc"; else bad "$desc"; fi
 }
 
+# check_fails <description> <command...>  — passes if the command exits non-zero
+check_fails() {
+  local desc="$1"; shift
+  if "$@" >/dev/null 2>&1; then bad "$desc"; else ok "$desc"; fi
+}
+
 # check_out <description> <expected-substring> <command...>
 check_out() {
   local desc="$1" expected="$2"; shift 2
@@ -69,10 +75,28 @@ verify_run() {
   rm -rf "$dir"
 }
 
+verify_firewall() {
+  section "firewall: default-drop egress with allowlist"
+  # Firewalled runs mirror run.sh: CAP_NET_ADMIN for the entrypoint's root stage
+  local fw=(container run --rm --cap-add CAP_NET_ADMIN "${IMAGE}")
+  check_fails "disallowed egress blocked (example.com)" \
+    "${fw[@]}" curl -fsS --max-time 10 https://example.com
+  check "LM Studio via gateway allowed" \
+    "${fw[@]}" bash -c \
+    'curl -fsS --max-time 10 "http://$(ip route | awk "/default/ {print \$3; exit}"):${LMSTUDIO_PORT:-1234}/v1/models"'
+  check "github.com allowed" \
+    "${fw[@]}" git ls-remote https://github.com/apple/container.git HEAD
+  check "bitbucket.org allowed" \
+    "${fw[@]}" git ls-remote https://bitbucket.org/atlassian/aui.git HEAD
+  check "go module proxy allowed" \
+    "${fw[@]}" bash -c \
+    'mkdir -p /tmp/scratch-mod && cd /tmp/scratch-mod && go mod init scratch >/dev/null 2>&1 && go get golang.org/x/text@latest'
+}
+
 main() {
   local sections=("$@")
   if [[ ${#sections[@]} -eq 0 ]]; then
-    sections=(image pi run)
+    sections=(image pi run firewall)
   fi
   for s in "${sections[@]}"; do
     "verify_${s}"

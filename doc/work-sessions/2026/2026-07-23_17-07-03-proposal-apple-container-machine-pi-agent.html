@@ -415,24 +415,24 @@ container run --rm -it \
 <div class="phase">
 <h3>Phase 4 — hunk review workflow</h3>
 <ul class="tasks">
-  <li><input type="checkbox"> In a scratch repo, have pi make a small change; review with <code>./run.sh &lt;dir&gt; hunk diff</code> — TUI renders and navigates correctly.</li>
-  <li><input type="checkbox"> Document the optional <code>git config core.pager "hunk pager"</code> integration in the README (set it inside the repo or on the host — there is no shared global gitconfig).</li>
+  <li><input type="checkbox" checked> In a scratch repo, have pi make a small change; review with <code>./run.sh &lt;dir&gt; hunk diff</code> — TUI renders and navigates correctly. <em>Result: pi authored the change headlessly; user-verified the hunk TUI (render + navigation) 2026-07-23. Noted: hunk blocks without a TTY, and killing the host-side <code>container run</code> can strand a container (<code>--rm</code> doesn't fire) — troubleshooting note added to README.</em></li>
+  <li><input type="checkbox" checked> Document the optional <code>git config core.pager "hunk pager"</code> integration in the README (set it inside the repo or on the host — there is no shared global gitconfig). <em>Result: documented per-repo, with the caveat that repo-level config also affects host git since the config file is shared.</em></li>
 </ul>
 </div>
 
 <div class="phase">
 <h3>Phase 5 — Documentation</h3>
 <ul class="tasks">
-  <li><input type="checkbox"> Write <code>attempt-004-apple-container/README.md</code>: rationale (including the machines-vs-plain-containers decision), prerequisites (container CLI, LM Studio + network serving), usage, comparison table vs attempts 1–3, risks/mitigations (LAN exposure, hook poisoning + <code>core.hooksPath</code>, credentials-stay-on-host workflow).</li>
-  <li><input type="checkbox"> Run the full <code>verify.sh</code> end-to-end from a clean slate (<code>make clean</code> → <code>make image</code> → <code>make verify</code>) to prove the README's instructions.</li>
+  <li><input type="checkbox" checked> Write <code>attempt-004-apple-container/README.md</code>: rationale (including the machines-vs-plain-containers decision), prerequisites (container CLI, LM Studio + network serving), usage, comparison table vs attempts 1–3, risks/mitigations (LAN exposure, hook poisoning + <code>core.hooksPath</code>, credentials-stay-on-host workflow). <em>Result: written, plus a troubleshooting section covering the “No API key” symptom, stray containers after killed host processes, and the misleading <code>system status</code> output.</em></li>
+  <li><input type="checkbox" checked> Run the full <code>verify.sh</code> end-to-end from a clean slate (<code>make clean</code> → <code>make image</code> → <code>make verify</code>) to prove the README's instructions. <em>Result: 15/15 green from a fresh image build.</em></li>
 </ul>
 </div>
 
 <div class="phase">
 <h3>Phase 6 (optional) — Egress hardening</h3>
 <ul class="tasks">
-  <li><input type="checkbox"> <span class="tag red">RED</span> Add <code>verify_firewall</code>: in-guest <code>curl https://example.com</code> fails; <code>curl http://$GW:1234/v1/models</code>, <code>git ls-remote https://github.com/...</code>, <code>git ls-remote https://bitbucket.org/...</code> (a public repo), and <code>go mod download</code> in a scratch module (exercising proxy.golang.org + sum.golang.org) all succeed. Run — fails (no rules).</li>
-  <li><input type="checkbox"> <span class="tag green">GREEN</span> Port attempt-002's <code>init-firewall.sh</code> into <code>entrypoint.sh</code> as a root stage: nftables default-drop with allowances for gateway:1234 and, on 443, github.com, bitbucket.org, proxy.golang.org, sum.golang.org, and storage.googleapis.com (plus DNS as required), then drop to <code>agent</code> via <code>setpriv</code> (image switches from <code>USER agent</code> to root entry + privilege drop). Verification passes.</li>
+  <li><input type="checkbox" checked> <span class="tag red">RED</span> Add <code>verify_firewall</code>: in-guest <code>curl https://example.com</code> fails; <code>curl http://$GW:1234/v1/models</code>, <code>git ls-remote https://github.com/...</code>, <code>git ls-remote https://bitbucket.org/...</code> (a public repo), and <code>go mod download</code> in a scratch module (exercising proxy.golang.org + sum.golang.org) all succeed. Run — fails (no rules). <em>Result: red for the right reason — example.com reachable pre-firewall; the four allowed paths pass, proving the positive cases before rules exist.</em></li>
+  <li><input type="checkbox" checked> <span class="tag green">GREEN</span> Port attempt-002's <code>init-firewall.sh</code> into <code>entrypoint.sh</code> as a root stage: nftables default-drop with allowances for gateway:1234 and, on 443, github.com, bitbucket.org, proxy.golang.org, sum.golang.org, and storage.googleapis.com (plus DNS as required), then drop to <code>agent</code> via <code>setpriv</code> (image switches from <code>USER agent</code> to root entry + privilege drop). Verification passes. <em>Result: 5/5 green; full suite 20/20. Deviation: apple/container grants only the default OCI capability set (no CAP_NET_ADMIN), so <code>run.sh</code> passes <code>--cap-add CAP_NET_ADMIN</code> — safe here because it affects only the guest VM's kernel, and setpriv strips it before the agent runs (verified: agent cannot flush or even read the ruleset). DNS is restricted to the gateway resolver; the rules are a standalone <code>init-firewall.sh</code> invoked by the entrypoint rather than inlined.</em></li>
 </ul>
 </div>
 
