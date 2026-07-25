@@ -1,7 +1,8 @@
 FROM ubuntu:24.04
 
+# build-essential supplies make (for `make test`) plus gcc/g++ for cgo
 RUN apt-get update && apt-get install -y \
-      curl ca-certificates git make jq ripgrep python3 perl iproute2 nftables \
+      curl ca-certificates git build-essential jq ripgrep python3 perl iproute2 nftables \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Go from the official tarball (apt's golang is stale); arm64 because
