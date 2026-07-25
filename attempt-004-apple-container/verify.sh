@@ -46,6 +46,7 @@ verify_image() {
   check "node available"    container run --rm "${IMAGE}" node --version
   check "pi available"      container run --rm "${IMAGE}" pi --version
   check "hunk available"    container run --rm "${IMAGE}" hunk --version
+  check "make available"    container run --rm "${IMAGE}" make --version
   check "jq available"      container run --rm "${IMAGE}" jq --version
   check "python3 available" container run --rm "${IMAGE}" python3 --version
   check "perl available"    container run --rm "${IMAGE}" perl --version

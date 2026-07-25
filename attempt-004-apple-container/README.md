@@ -44,15 +44,15 @@ project dir      ←── -v "$PWD:$PWD" ────→  same path inside gues
 
 ## Components
 
-| File               | Purpose                                                         |
-|--------------------|-----------------------------------------------------------------|
-| `Dockerfile`       | Toolbox image: git, hunk, pi, Go 1.26, Node 22, python3, perl   |
-| `entrypoint.sh`    | Root stage: firewall, drop to `agent`; then pi setup + hand-off |
-| `init-firewall.sh` | nftables default-drop egress; LM Studio only (VCS opt-in)       |
-| `setup-pi.sh`      | In-guest: detects gateway, generates pi's `models.json`         |
-| `run.sh`           | Host-side session launcher                                      |
-| `Makefile`         | `image`, `verify`, `clean` targets                              |
-| `verify.sh`        | Smoke tests (the red/green driver for this attempt)             |
+| File               | Purpose                                                             |
+|--------------------|---------------------------------------------------------------------|
+| `Dockerfile`       | Toolbox image: git, make, hunk, pi, Go 1.26, Node 22, python3, perl |
+| `entrypoint.sh`    | Root stage: firewall, drop to `agent`; then pi setup + hand-off     |
+| `init-firewall.sh` | nftables default-drop egress; LM Studio only (VCS opt-in)           |
+| `setup-pi.sh`      | In-guest: detects gateway, generates pi's `models.json`             |
+| `run.sh`           | Host-side session launcher                                          |
+| `Makefile`         | `image`, `verify`, `clean` targets                                  |
+| `verify.sh`        | Smoke tests (the red/green driver for this attempt)                 |
 
 ## Prerequisites
 
