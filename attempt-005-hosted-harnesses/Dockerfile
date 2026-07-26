@@ -18,8 +18,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# hunk (diff review TUI) ships plain JS, so it keeps --ignore-scripts
-RUN npm install -g --ignore-scripts hunkdiff
+# hunk (diff review TUI) and pi ship plain JS with no postinstall step, so these
+# two keep --ignore-scripts. pi is the most provider-agnostic harness here: its
+# models.json takes an arbitrary baseUrl, which is how attempt-004 pointed it at
+# LM Studio.
+ARG PI_VERSION=0.82.1
+RUN npm install -g --ignore-scripts \
+      hunkdiff \
+      "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
 # The four harnesses, version-pinned. Unlike hunk, three of these four resolve
 # their platform binary in a postinstall script (@anthropic-ai/claude-code,
@@ -68,7 +74,8 @@ RUN useradd --create-home --shell /bin/bash agent
 # safe in this throwaway single-purpose guest.
 RUN git config --system --add safe.directory '*'
 
-COPY entrypoint.sh init-firewall.sh setup-harness.sh egress-report.sh /usr/local/bin/
+COPY entrypoint.sh init-firewall.sh setup-harness.sh egress-report.sh \
+     providers.sh /usr/local/bin/
 
 # Entry starts as root to install nftables rules and start the proxy, then
 # setpriv-drops to 'agent' (see entrypoint.sh) — the agent never has root.

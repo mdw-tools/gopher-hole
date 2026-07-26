@@ -20,6 +20,14 @@ fi
 
 /usr/local/bin/setup-harness.sh
 
+# Provider wiring that must reach the harness process itself (e.g.
+# CLAUDE_CODE_USE_BEDROCK, ANTHROPIC_BASE_URL). setup-harness.sh is a child
+# process, so it writes these out and we source them here.
+if [[ -f /home/agent/.gopher-provider-env ]]; then
+  # shellcheck source=/dev/null
+  . /home/agent/.gopher-provider-env
+fi
+
 # Not exec'd: the egress report runs after the session command exits. The
 # session's exit status is preserved.
 set +e

@@ -23,7 +23,11 @@
 # strips CAP_NET_ADMIN before the session command runs.
 set -euo pipefail
 
+# shellcheck source=providers.sh
+. /usr/local/bin/providers.sh
+
 HARNESS="${GOPHER_HARNESS:-none}"
+PROVIDER="${GOPHER_PROVIDER:-none}"
 PROXY_PORT="${GOPHER_PROXY_PORT:-8888}"
 CONF=/etc/tinyproxy/gopher.conf
 FILTER=/etc/tinyproxy/gopher-allow.txt
@@ -31,32 +35,28 @@ LOG_DIR=/var/log/tinyproxy
 LOG="${LOG_DIR}/gopher.log"
 
 # --- allowlist -------------------------------------------------------------
-# Only the selected harness's endpoints are reachable, so a claude session
-# cannot talk to OpenAI and vice versa. Toolchain hosts are shared: in-guest
-# `go get` and `npm install` work without sharing any host cache.
+# Derived entirely from the matrix in providers.sh, so ONLY the selected
+# provider's endpoint is reachable: a claude+anthropic session cannot talk to
+# OpenAI, and a claude+bedrock session cannot talk to Anthropic either. Toolchain
+# hosts are shared: in-guest `go get` and `npm install` work without sharing any
+# host cache.
 DOMAINS=(
   proxy.golang.org
   sum.golang.org
   storage.googleapis.com
   registry.npmjs.org
 )
-case "$HARNESS" in
-  claude)   DOMAINS+=(api.anthropic.com) ;;
-  codex)    DOMAINS+=(api.openai.com) ;;
-  opencode)
-    # Zen (opencode's own pay-per-usage gateway) needs only opencode.ai, so a
-    # Zen session cannot reach the provider APIs at all. run.sh picks the mode
-    # from which credential is present. models.dev is the model catalog.
-    case "${GOPHER_OPENCODE_MODE:-direct}" in
-      zen)    DOMAINS+=(opencode.ai models.dev) ;;
-      direct) DOMAINS+=(api.anthropic.com api.openai.com models.dev) ;;
-      *) echo "init-firewall: unknown opencode mode '${GOPHER_OPENCODE_MODE}'" >&2; exit 1 ;;
-    esac
-    ;;
-  amp)      DOMAINS+=(ampcode.com) ;;
-  none)     ;;  # toolchain only — a sandbox shell with no model access
-  *) echo "init-firewall: unknown harness '${HARNESS}'" >&2; exit 1 ;;
-esac
+
+harness_providers "$HARNESS" >/dev/null 2>&1 \
+  || { echo "init-firewall: unknown harness '${HARNESS}'" >&2; exit 1; }
+harness_supports "$HARNESS" "$PROVIDER" \
+  || { echo "init-firewall: harness '${HARNESS}' does not support provider '${PROVIDER}'" >&2; exit 1; }
+
+MODEL_HOSTS=$(provider_model_hosts "$PROVIDER") \
+  || { echo "init-firewall: cannot resolve hosts for provider '${PROVIDER}'" >&2; exit 1; }
+for host in $MODEL_HOSTS $(harness_extra_hosts "$HARNESS"); do
+  DOMAINS+=("$host")
+done
 
 # Opt-in additions for this session (comma-separated), e.g. a private module host
 if [[ -n "${EGRESS_EXTRA_HOSTS:-}" ]]; then
@@ -133,4 +133,4 @@ for ns in $NAMESERVERS; do
 done
 
 # Diagnostic, not session output — keep stdout clean for the session command.
-echo "egress: harness=${HARNESS} via 127.0.0.1:${PROXY_PORT} — allowed: ${DOMAINS[*]}" >&2
+echo "egress: ${HARNESS}/${PROVIDER} via 127.0.0.1:${PROXY_PORT} — allowed: ${DOMAINS[*]}" >&2

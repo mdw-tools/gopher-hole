@@ -3,21 +3,30 @@
 # sharing only the project directory.
 #
 # Usage:
-#   ./run.sh <harness> [PROJECT_DIR] [COMMAND...]
+#   ./run.sh <harness>[:<provider>] [PROJECT_DIR] [COMMAND...]
 #
-#   <harness>  claude | codex | opencode | amp | none
+#   <harness>   claude | codex | opencode | pi | amp | none
+#   <provider>  anthropic | openai | bedrock | zen | amp | custom | none
+#               omitted → that harness's default (see providers.sh)
 #
 # Examples:
-#   ./run.sh claude ~/src/myproject         # claude, auto-approving, in that dir
-#   ./run.sh codex  ~/src/myproject         # codex, approvals off
-#   ./run.sh none   ~/src/myproject         # sandbox shell, no model access
-#   ./run.sh none   ~/src/myproject hunk diff   # review the changes it made
+#   ./run.sh claude ~/src/myproject            # claude → anthropic (its default)
+#   ./run.sh claude:bedrock ~/src/myproject    # claude → AWS Bedrock
+#   ./run.sh opencode ~/src/myproject          # opencode → Zen (its default)
+#   ./run.sh opencode:openai ~/src/myproject   # opencode → OpenAI directly
+#   ./run.sh pi:bedrock ~/src/myproject        # pi → Bedrock
+#   ./run.sh none ~/src/myproject hunk diff    # review changes, no model access
 #
-# The harness is positional and required because the credential injected into
-# the guest depends on it: a claude session carries no OpenAI key, and vice
-# versa. One session, one harness, one key.
+# harness and provider together determine BOTH the credential injected into the
+# guest and the egress allowlist, derived from the same table (providers.sh). A
+# claude:bedrock session carries only the Bedrock credential and can reach only
+# the Bedrock endpoint — not api.anthropic.com. One session, one provider, one key.
 #
 # Environment (optional):
+#   MODEL               model id to pin for this session
+#   BEDROCK_REGIONS     comma-separated regions to allow (default $AWS_REGION)
+#   CUSTOM_BASE_URL     provider=custom: the endpoint (its host is allowlisted)
+#   CUSTOM_API_KEY      provider=custom: bearer key, if the endpoint needs one
 #   EGRESS_EXTRA_HOSTS  comma-separated extra hostnames to allow this session
 #   SAFE_PROMPTS=1      keep the harness's own approval prompts on
 #   GOPHER_STATE_DIR    where per-harness state and caches live
@@ -25,20 +34,43 @@
 set -euo pipefail
 
 IMAGE="gopher-hole-hosted"
+HERE=$(cd "$(dirname "$0")" && pwd -P)
 STATE_ROOT="${GOPHER_STATE_DIR:-${HOME}/.gopher-hole}"
 
+# shellcheck source=providers.sh
+. "${HERE}/providers.sh"
+
 usage() {
-  echo "usage: $0 <claude|codex|opencode|amp|none> [PROJECT_DIR] [COMMAND...]" >&2
+  echo "usage: $0 <harness>[:<provider>] [PROJECT_DIR] [COMMAND...]" >&2
+  echo "  harnesses and their providers (first = default):" >&2
+  local h
+  for h in $(all_harnesses); do
+    printf '    %-9s %s\n' "$h" "$(harness_providers "$h")" >&2
+  done
   exit 2
 }
 
 [[ $# -ge 1 ]] || usage
-HARNESS="$1"; shift
+SPEC="$1"; shift
 
-case "$HARNESS" in
-  claude|codex|opencode|amp|none) ;;
-  *) echo "error: unknown harness '${HARNESS}'" >&2; usage ;;
-esac
+HARNESS="${SPEC%%:*}"
+if [[ "$SPEC" == *:* ]]; then PROVIDER="${SPEC#*:}"; else PROVIDER=""; fi
+
+harness_providers "$HARNESS" >/dev/null 2>&1 || {
+  echo "error: unknown harness '${HARNESS}'" >&2; usage; }
+
+[[ -n "$PROVIDER" ]] || PROVIDER=$(harness_default_provider "$HARNESS")
+
+harness_supports "$HARNESS" "$PROVIDER" || {
+  echo "error: harness '${HARNESS}' does not support provider '${PROVIDER}'." >&2
+  echo "       supported: $(harness_providers "$HARNESS")" >&2
+  if [[ "$HARNESS" == "codex" && "$PROVIDER" == "bedrock" ]]; then
+    echo "       codex has no verified Bedrock configuration path; put an" >&2
+    echo "       OpenAI-compatible gateway in front of Bedrock and use" >&2
+    echo "       codex:custom with CUSTOM_BASE_URL. See README." >&2
+  fi
+  exit 1
+}
 
 PROJECT_DIR="${1:-$(pwd)}"
 shift || true
@@ -46,53 +78,64 @@ shift || true
 # Resolve symlinks so the host path and the in-guest mount agree exactly
 PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd -P)
 
-ENV_ARGS=(--env "GOPHER_HARNESS=${HARNESS}")
+ENV_ARGS=(--env "GOPHER_HARNESS=${HARNESS}" --env "GOPHER_PROVIDER=${PROVIDER}")
 MOUNTS=()
 
+[[ -n "${MODEL:-}" ]] && ENV_ARGS+=(--env "MODEL=${MODEL}")
+
 # --- credentials -----------------------------------------------------------
-# Passed as env vars only; no host credential file is ever mounted. Use keys
-# minted for this purpose with a hard spend cap — not your subscription's OAuth
-# token, whose blast radius is the whole account. See README "Credentials".
-require_key() {
-  local var="$1"
-  if [[ -z "${!var:-}" ]]; then
-    echo "error: ${HARNESS} needs ${var} set in your host environment." >&2
-    echo "       Use a dedicated, spend-capped key — see README 'Credentials'." >&2
-    exit 1
-  fi
-  ENV_ARGS+=(--env "${var}=${!var}")
+# Exactly ONE provider's credential enters the guest, chosen by the matrix. No
+# host credential file is ever mounted, and no other provider's key is forwarded
+# even when it is sitting right there in your host environment — so a leak
+# exposes one revocable, spend-capped key rather than every key you own.
+missing_key() {
+  echo "error: ${HARNESS}/${PROVIDER} needs $* set in your host environment." >&2
+  echo "       Use a dedicated, spend-capped key — see README 'Credentials'." >&2
+  exit 1
 }
 
-case "$HARNESS" in
-  claude) require_key ANTHROPIC_API_KEY ;;
-  codex)  require_key OPENAI_API_KEY ;;
-  amp)    require_key AMP_API_KEY ;;
-  opencode)
-    # Zen is opencode's own pay-per-usage gateway: one credential that routes to
-    # many models. It takes precedence when present, because it fits this design
-    # better than direct provider keys — a leak exposes one revocable key with
-    # its own spend cap instead of every provider key you own, and the session
-    # cannot reach api.anthropic.com or api.openai.com at all.
-    #
-    # To go direct to a provider despite having a Zen key on the host:
-    #   env -u OPENCODE_API_KEY ./run.sh opencode ~/src/myproject
-    if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
-      ENV_ARGS+=(--env "OPENCODE_API_KEY=${OPENCODE_API_KEY}" \
-                 --env "GOPHER_OPENCODE_MODE=zen")
+case "$PROVIDER" in
+  bedrock)
+    # AWS_BEARER_TOKEN_BEDROCK is a Bedrock-SCOPED credential. AWS_ACCESS_KEY_ID
+    # is a general AWS credential whose blast radius is whatever IAM permits —
+    # a categorically worse thing to hand an unattended agent. Prefer the bearer
+    # token; warn loudly on the fallback rather than silently degrading.
+    if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
+      ENV_ARGS+=(--env "AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}")
+    elif [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+      echo "warning: using general AWS credentials rather than a Bedrock API key." >&2
+      echo "         AWS_BEARER_TOKEN_BEDROCK is scoped to Bedrock; access keys are" >&2
+      echo "         scoped to whatever IAM allows. Ensure this principal can do" >&2
+      echo "         nothing but bedrock:InvokeModel*. See README." >&2
+      ENV_ARGS+=(--env "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}" \
+                 --env "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}")
+      # Short-lived STS credentials decay on their own — strictly preferable
+      [[ -n "${AWS_SESSION_TOKEN:-}" ]] \
+        && ENV_ARGS+=(--env "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}")
     else
-      for var in ANTHROPIC_API_KEY OPENAI_API_KEY; do
-        [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
-      done
-      if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}" ]]; then
-        echo "error: opencode needs OPENCODE_API_KEY (Zen), or" >&2
-        echo "       ANTHROPIC_API_KEY / OPENAI_API_KEY to go direct to a provider." >&2
-        echo "       Use a dedicated, spend-capped key — see README 'Credentials'." >&2
-        exit 1
-      fi
-      ENV_ARGS+=(--env "GOPHER_OPENCODE_MODE=direct")
+      missing_key "AWS_BEARER_TOKEN_BEDROCK (preferred) or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY"
     fi
+    AWS_REGION_EFF="${AWS_REGION:-us-east-1}"
+    ENV_ARGS+=(--env "AWS_REGION=${AWS_REGION_EFF}")
+    [[ -n "${BEDROCK_REGIONS:-}" ]] && ENV_ARGS+=(--env "BEDROCK_REGIONS=${BEDROCK_REGIONS}")
     ;;
+
+  custom)
+    # An arbitrary endpoint: its hostname is the only thing allowlisted, and it
+    # is resolved on the HOST before the guest boots, so nothing inside can
+    # repoint the harness at somewhere else and reach it.
+    [[ -n "${CUSTOM_BASE_URL:-}" ]] || missing_key "CUSTOM_BASE_URL"
+    ENV_ARGS+=(--env "CUSTOM_BASE_URL=${CUSTOM_BASE_URL}")
+    [[ -n "${CUSTOM_API_KEY:-}" ]] && ENV_ARGS+=(--env "CUSTOM_API_KEY=${CUSTOM_API_KEY}")
+    ;;
+
   none) ;;  # deliberately keyless
+
+  *)
+    CRED_VAR=$(provider_cred_vars "$PROVIDER")
+    if [[ -z "${!CRED_VAR:-}" ]]; then missing_key "$CRED_VAR"; fi
+    ENV_ARGS+=(--env "${CRED_VAR}=${!CRED_VAR}")
+    ;;
 esac
 
 [[ -n "${EGRESS_EXTRA_HOSTS:-}" ]] && ENV_ARGS+=(--env "EGRESS_EXTRA_HOSTS=${EGRESS_EXTRA_HOSTS}")
@@ -110,8 +153,11 @@ fi
 # Dedicated dirs under ~/.gopher-hole. The host's own ~/.claude, ~/.codex etc.
 # are never mounted: they hold credentials, history, MCP tokens and your global
 # instructions, none of which belong in a guest running unattended.
+# State is keyed by harness AND provider: a claude:anthropic session and a
+# claude:bedrock session get separate config, so provider-specific settings can't
+# leak across sessions or fight each other on startup.
 if [[ "$HARNESS" != "none" ]]; then
-  STATE="${STATE_ROOT}/state/${HARNESS}"
+  STATE="${STATE_ROOT}/state/${HARNESS}-${PROVIDER}"
   mkdir -p "$STATE"
   case "$HARNESS" in
     claude)
@@ -126,6 +172,9 @@ if [[ "$HARNESS" != "none" ]]; then
       mkdir -p "${STATE}/config" "${STATE}/data"
       MOUNTS+=(--volume "${STATE}/config:/home/agent/.config/opencode" \
                --volume "${STATE}/data:/home/agent/.local/share/opencode")
+      ;;
+    pi)
+      MOUNTS+=(--volume "${STATE}:/home/agent/.pi")
       ;;
     amp)
       MOUNTS+=(--volume "${STATE}:/home/agent/.config/amp")
@@ -176,9 +225,19 @@ if [[ $# -eq 0 ]]; then
     claude)
       if [[ "${SAFE_PROMPTS:-0}" == "1" ]]; then set -- claude
       else set -- claude --dangerously-skip-permissions; fi
+      [[ -n "${MODEL:-}" ]] && set -- "$@" --model "${MODEL}"
       ;;
-    codex)    set -- codex ;;     # approvals off via config.toml
-    opencode) set -- opencode ;;  # permissions allowed via opencode.json
+    codex)
+      set -- codex   # approvals off via config.toml
+      [[ -n "${MODEL:-}" ]] && set -- "$@" -m "${MODEL}"
+      ;;
+    opencode)
+      set -- opencode   # permissions allowed via opencode.json
+      [[ -n "${MODEL:-}" ]] && set -- "$@" --model "${MODEL}"
+      ;;
+    pi)
+      set -- pi   # provider/model pinned in settings.json by setup-harness.sh
+      ;;
     amp)      set -- amp ;;
     none)     set -- bash ;;
   esac

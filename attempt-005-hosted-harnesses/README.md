@@ -48,12 +48,13 @@ project dir      ←── -v "$PWD:$PWD" ───→  same path in guest (only
 
 | File                | Purpose                                                                           |
 |---------------------|-----------------------------------------------------------------------------------|
-| `Dockerfile`        | Toolbox: 4 harnesses (pinned), hunk, Go 1.26, Node 22, tinyproxy, build-essential |
+| `Dockerfile`        | Toolbox: 5 harnesses (pinned), hunk, Go 1.26, Node 22, tinyproxy, build-essential |
+| `providers.sh`      | **The harness × provider matrix — single source of truth**, sourced host and guest |
 | `entrypoint.sh`     | Root stage: proxy + firewall (fail closed), drop to `agent`; then session         |
 | `init-firewall.sh`  | tinyproxy allowlist + nftables uid-scoped egress — the core of the design         |
-| `setup-harness.sh`  | Per-harness config: approvals off, in-tool sandboxes off                          |
+| `setup-harness.sh`  | Per-pair config: approvals off, in-tool sandboxes off, provider wiring           |
 | `egress-report.sh`  | End-of-session summary of every host reached and refused                          |
-| `run.sh`            | Host-side launcher; picks harness, injects exactly one key                        |
+| `run.sh`            | Host-side launcher; picks the pair, injects exactly one credential                |
 | `verify.sh`         | Smoke tests, including the negative claims (the red/green driver)                 |
 | `Makefile`          | `image`, `verify`, `clean`                                                        |
 
@@ -70,30 +71,68 @@ project dir      ←── -v "$PWD:$PWD" ───→  same path in guest (only
 # one-time
 make image
 
-# each session — disposable VM, one harness, one key, one directory
-./run.sh claude   ~/src/myproject     # claude code, approvals off
-./run.sh codex    ~/src/myproject     # codex, approvals off
-./run.sh opencode ~/src/myproject
-./run.sh amp      ~/src/myproject
-./run.sh none     ~/src/myproject     # sandbox shell, no model access at all
+# each session — disposable VM, one pair, one credential, one directory
+./run.sh claude   ~/src/myproject          # claude → anthropic (its default)
+./run.sh claude:bedrock ~/src/myproject    # claude → AWS Bedrock
+./run.sh codex    ~/src/myproject          # codex → openai
+./run.sh opencode ~/src/myproject          # opencode → Zen (its default)
+./run.sh opencode:bedrock ~/src/myproject  # opencode → Bedrock
+./run.sh pi:openai ~/src/myproject         # pi → OpenAI
+./run.sh none     ~/src/myproject          # sandbox shell, no model access
 ./run.sh none     ~/src/myproject hunk diff   # review what it did
+
+MODEL=claude-sonnet-4-5 ./run.sh claude ~/src/myproject   # pin a model
 
 make verify
 ```
 
-The harness is positional and required, because the credential injected into the
-guest depends on it. A `claude` session carries no OpenAI key and cannot reach
-`api.openai.com`; a `codex` session is the mirror image. `verify.sh` asserts
-both directions.
+Both halves of `<harness>:<provider>` are load-bearing: **together they determine
+the credential injected into the guest AND the egress allowlist**, derived from
+the same table. A `claude:bedrock` session carries only the Bedrock credential
+and can reach only the Bedrock endpoint — not `api.anthropic.com`. Omit the
+provider to get that harness's default.
 
 Environment overrides:
 
-| Variable             | Effect                                                          |
-|----------------------|-----------------------------------------------------------------|
-| `EGRESS_EXTRA_HOSTS` | Comma-separated extra hostnames to allow for this session        |
-| `SAFE_PROMPTS=1`     | Keep the harness's own approval prompts on (claude)              |
-| `GOPHER_STATE_DIR`   | Where state and caches live (default `~/.gopher-hole`)           |
-| `GOPHER_PROXY_PORT`  | In-guest proxy port (default 8888)                              |
+| Variable             | Effect                                                              |
+|----------------------|---------------------------------------------------------------------|
+| `MODEL`              | Model id to pin for this session                                    |
+| `BEDROCK_REGIONS`    | Comma-separated regions to allow (default `$AWS_REGION`)            |
+| `CUSTOM_BASE_URL`    | `provider=custom`: the endpoint; its host is what gets allowlisted   |
+| `CUSTOM_API_KEY`     | `provider=custom`: bearer key, if the endpoint needs one             |
+| `EGRESS_EXTRA_HOSTS` | Comma-separated extra hostnames to allow for this session            |
+| `SAFE_PROMPTS=1`     | Keep the harness's own approval prompts on (claude)                  |
+| `GOPHER_STATE_DIR`   | Where state and caches live (default `~/.gopher-hole`)               |
+| `GOPHER_PROXY_PORT`  | In-guest proxy port (default 8888)                                  |
+
+## Provider matrix
+
+Every cell below was established by reading the **pinned harness binaries**, not
+the documentation — `providers.sh` carries the same table in executable form, and
+`verify.sh`'s `matrix` section asserts all 11 valid pairs.
+
+| Harness    | Providers (first = default)                | Notes                                        |
+|------------|--------------------------------------------|----------------------------------------------|
+| `claude`   | `anthropic`, `bedrock`, `custom`           | `CLAUDE_CODE_USE_BEDROCK`; also knows Vertex/Foundry |
+| `codex`    | `openai`, `custom`                         | Bedrock **excluded** — see below              |
+| `opencode` | `zen`, `anthropic`, `openai`, `bedrock`    | `amazon-bedrock` provider via models.dev      |
+| `pi`       | `anthropic`, `openai`, `bedrock`, `custom` | wire formats incl. `bedrock-converse-stream`  |
+| `amp`      | `amp`                                      | server-side routing only; no provider choice  |
+| `none`     | `none`                                     | keyless sandbox shell                         |
+
+**Why `codex:bedrock` is refused.** The codex binary does contain a
+`BedrockApiKeyAuth` variant, but it sits in a concatenated string table with no
+discoverable config key and no `bedrock-runtime` endpoint anywhere in the
+binary — so there was no way to verify a configuration path. Shipping a guess
+would produce a session that silently fails to authenticate, so the pair is
+rejected with a message pointing at the alternative: put an OpenAI-compatible
+gateway in front of Bedrock and use `codex:custom` with `CUSTOM_BASE_URL`.
+`run.sh` prints exactly that hint.
+
+The `custom` provider is the general escape hatch — any endpoint, with only its
+hostname allowlisted. It covers gateways, LiteLLM-style translators, and a local
+LM Studio if you are ever back on capable hardware (which is attempt-004's whole
+arrangement, reachable from here with one flag).
 
 ## Egress: a filtering proxy, not an IP allowlist
 
@@ -168,50 +207,92 @@ host's real caches are never mounted (asserted in `verify.sh`).
 
 **Use a key minted for this purpose, with a hard spend cap, and nothing else.**
 
-| Harness    | Required host env var                                        |
-|------------|--------------------------------------------------------------|
-| `claude`   | `ANTHROPIC_API_KEY`                                          |
-| `codex`    | `OPENAI_API_KEY`                                             |
-| `amp`      | `AMP_API_KEY`                                                |
-| `opencode` | `OPENCODE_API_KEY` (Zen), else `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
-| `none`     | (none — refuses to carry any)                                |
+The credential follows the **provider**, not the harness:
+
+| Provider    | Required host env var(s)                                              |
+|-------------|-----------------------------------------------------------------------|
+| `anthropic` | `ANTHROPIC_API_KEY`                                                   |
+| `openai`    | `OPENAI_API_KEY`                                                      |
+| `zen`       | `OPENCODE_API_KEY`                                                    |
+| `amp`       | `AMP_API_KEY`                                                         |
+| `bedrock`   | `AWS_BEARER_TOKEN_BEDROCK` (preferred) or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` |
+| `custom`    | `CUSTOM_BASE_URL`, plus `CUSTOM_API_KEY` if the endpoint needs one     |
+| `none`      | (none — refuses to carry any)                                         |
+
+**Only the selected provider's credential enters the guest**, even when every
+other key is sitting right there in your host environment. `verify.sh`'s
+`creds_matrix` section proves this for all 11 pairs by setting decoy values for
+every credential the matrix knows and asserting each session carries its own and
+only its own.
 
 - **Keys are passed as env vars only.** No host credential file is ever mounted.
   `run.sh` refuses to launch a harness whose key is missing rather than starting
   a session that will fail halfway through.
-
-### opencode Zen is the preferred credential
-
-opencode ships its own pay-per-usage gateway ("Zen") at `opencode.ai/zen/v1`,
-billed by opencode and reached with a single `OPENCODE_API_KEY`. That fits this
-design better than direct provider keys, so `run.sh` prefers it whenever the
-variable is set:
-
-| Mode     | Trigger                             | Credential in guest | Reachable model hosts                |
-|----------|-------------------------------------|---------------------|--------------------------------------|
-| `zen`    | `OPENCODE_API_KEY` set              | that key only       | `opencode.ai`, `models.dev`          |
-| `direct` | Zen key absent, provider key set    | provider key(s)     | `api.anthropic.com`, `api.openai.com`, `models.dev` |
-
-Two things follow. A leak exposes **one** revocable, independently spend-capped
-key rather than every provider key you own. And a Zen session has no business
-reaching the provider APIs, so it **cannot** — the allowlist narrows to the
-gateway, which `verify.sh`'s `zen` section asserts in both directions.
-
-To go direct despite having a Zen key on the host, unset it for that session:
-
-```bash
-env -u OPENCODE_API_KEY ./run.sh opencode ~/src/myproject
-```
 - **Don't use subscription OAuth.** A Max/Pro OAuth token in a guest risks the
   whole account and has no spend ceiling; a scoped API key is bounded and
   revocable in one click. It also sidesteps the login flow, which wants a
   browser the guest does not have.
 - **Assume any key in the guest is reachable by anything the agent runs** — a
   poisoned dependency or an instruction embedded in repo content can read the
-  environment. That is why the key is per-harness and capped rather than shared.
-- The host's own `~/.claude`, `~/.codex` and friends are never mounted; each
-  harness gets a dedicated dir under `~/.gopher-hole/state`. `verify.sh` asserts
-  `~/.ssh`, `~/.claude` and `~/.aws` are invisible in the guest.
+  environment. That is why the credential is per-pair and capped, not shared.
+- The host's own `~/.claude`, `~/.codex`, `~/.aws` and friends are never mounted.
+  Each pair gets a dedicated dir under `~/.gopher-hole/state`, keyed by harness
+  AND provider, so a `claude:anthropic` session and a `claude:bedrock` session
+  cannot fight over each other's config. `verify.sh` asserts `~/.ssh`,
+  `~/.claude` and `~/.aws` are invisible in the guest.
+
+### Bedrock without widening the blast radius
+
+Bedrock was the one addition that threatened principle #3, because AWS
+credentials are categorically broader than a model API key: `AWS_ACCESS_KEY_ID`
+plus a secret is a foothold in your account bounded only by IAM, not "one
+spend-capped model endpoint."
+
+**`AWS_BEARER_TOKEN_BEDROCK` avoids that** — it is a Bedrock-scoped bearer
+credential, and all three Bedrock-capable harnesses here support it (verified in
+each binary). With one, Bedrock costs essentially nothing in posture:
+
+- **Use a Bedrock API key, short-term variety.** Time-bounded, so a leak decays
+  on its own — arguably better than a static Anthropic key.
+- **`run.sh` prefers it and warns loudly on the fallback.** If only
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` are present it will proceed, but
+  prints a warning that the principal must be able to do nothing but
+  `bedrock:InvokeModel*`. `AWS_SESSION_TOKEN` is forwarded when set, since STS
+  credentials expire on their own.
+- **Never mount `~/.aws`.** opencode's binary carries the full AWS SDK chain
+  (`AWS_CONFIG_FILE`, `AWS_CONTAINER_CREDENTIALS_FULL_URI`, …), so an accidental
+  mount would be picked up silently. `verify.sh` asserts it is invisible; that
+  test is load-bearing rather than decorative.
+- **The endpoint is region-scoped** (`bedrock-runtime.<region>.amazonaws.com`).
+  Cross-region inference profiles fan out across several regional endpoints, so
+  `BEDROCK_REGIONS=us-east-1,us-west-2` widens the allowlist accordingly. The
+  egress summary is how you find out you needed it.
+
+Note what the firewall does and does not buy here. A Bedrock session can reach
+only the Bedrock endpoint, so over-broad AWS credentials cannot be used against
+S3 or IAM **from inside the guest**. But a credential that leaks out through the
+model channel can be used from anywhere, so IAM scoping is the real control and
+the allowlist is only depth.
+
+### opencode Zen: one credential, many models
+
+opencode ships its own pay-per-usage gateway ("Zen") at `opencode.ai/zen/v1`,
+billed by opencode and reached with a single `OPENCODE_API_KEY`. It is
+`opencode`'s **default provider** because it fits this design better than direct
+provider keys: a leak exposes one revocable, independently spend-capped key
+rather than every provider key you own, and the session's allowlist narrows to
+the gateway so it cannot reach `api.anthropic.com` or `api.openai.com` at all.
+
+Pick a different provider explicitly when you want one:
+
+```bash
+./run.sh opencode           ~/src/myproject   # → zen (default)
+./run.sh opencode:anthropic ~/src/myproject   # → api.anthropic.com
+./run.sh opencode:bedrock   ~/src/myproject   # → bedrock-runtime.<region>
+```
+
+Conversation sharing is off (`OPENCODE_DISABLE_SHARE=1`); it would post session
+content to opencode's servers.
 
 ## MCP servers: the hole to watch
 
@@ -264,9 +345,17 @@ with a fine-grained token scoped to specific repos, and add its host to
   its model catalog, allowlisted for this harness only. Conversation sharing is
   off (`OPENCODE_DISABLE_SHARE=1`) — it would post session content to opencode's
   servers. Prefers Zen; see **Credentials**.
+- **pi** — the most provider-agnostic of the five: its `Api` union covers
+  `anthropic-messages`, `openai-completions`, `openai-responses`,
+  `bedrock-converse-stream`, `google-vertex` and more. Set `MODEL` to pin one and
+  `setup-harness.sh` generates `~/.pi/agent/models.json` accordingly; without
+  `MODEL` it falls back to pi's own built-in provider defaults, which are a
+  better guess than anything invented here. Installed with `--ignore-scripts`
+  (no postinstall), like hunk.
 - **amp** — routes models server-side, so it cannot be pointed at a local model
-  and always needs a real Amp credential. Its auto-approval setting is not
-  pinned down here, so it runs at defaults and **will still prompt**.
+  and always needs a real Amp credential. It is the one harness flexibility
+  cannot reach. Its auto-approval setting is not pinned down here, so it runs at
+  defaults and **will still prompt**.
 
 ## Supply chain
 
@@ -289,6 +378,8 @@ experiment; bump the ARG and rebuild instead.
 | Kernel isolation     | Separate guest kernel | Separate machine    | Separate kernel per VM  | Separate kernel per VM       |
 | Filesystem exposure  | All of `~/src`        | rsync'd copy        | Project dir (`.git` ro) | Project dir (`.git` ro)      |
 | Credential in guest  | Yes                   | Yes                 | **None**                | One capped key per session   |
+| Harness choice       | One (claude)          | One (claude)        | One (pi)                | Five, one per session        |
+| Provider choice      | Fixed                 | Fixed               | LM Studio only          | Per-session, 6 providers     |
 | Model traffic        | Internet              | Internet            | Host-local only         | Internet (hostname-filtered) |
 | Egress mechanism     | IP allowlist          | Open                | LM Studio only          | Filtering proxy + uid rules  |
 | DNS exfil channel    | Open                  | Open                | Closed                  | **Closed**                   |
