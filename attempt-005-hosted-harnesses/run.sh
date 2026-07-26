@@ -68,13 +68,28 @@ case "$HARNESS" in
   codex)  require_key OPENAI_API_KEY ;;
   amp)    require_key AMP_API_KEY ;;
   opencode)
-    # Provider-agnostic: pass whichever provider keys are set, require one.
-    for var in ANTHROPIC_API_KEY OPENAI_API_KEY; do
-      [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
-    done
-    if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}" ]]; then
-      echo "error: opencode needs ANTHROPIC_API_KEY or OPENAI_API_KEY set." >&2
-      exit 1
+    # Zen is opencode's own pay-per-usage gateway: one credential that routes to
+    # many models. It takes precedence when present, because it fits this design
+    # better than direct provider keys — a leak exposes one revocable key with
+    # its own spend cap instead of every provider key you own, and the session
+    # cannot reach api.anthropic.com or api.openai.com at all.
+    #
+    # To go direct to a provider despite having a Zen key on the host:
+    #   env -u OPENCODE_API_KEY ./run.sh opencode ~/src/myproject
+    if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
+      ENV_ARGS+=(--env "OPENCODE_API_KEY=${OPENCODE_API_KEY}" \
+                 --env "GOPHER_OPENCODE_MODE=zen")
+    else
+      for var in ANTHROPIC_API_KEY OPENAI_API_KEY; do
+        [[ -n "${!var:-}" ]] && ENV_ARGS+=(--env "${var}=${!var}")
+      done
+      if [[ -z "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}" ]]; then
+        echo "error: opencode needs OPENCODE_API_KEY (Zen), or" >&2
+        echo "       ANTHROPIC_API_KEY / OPENAI_API_KEY to go direct to a provider." >&2
+        echo "       Use a dedicated, spend-capped key — see README 'Credentials'." >&2
+        exit 1
+      fi
+      ENV_ARGS+=(--env "GOPHER_OPENCODE_MODE=direct")
     fi
     ;;
   none) ;;  # deliberately keyless

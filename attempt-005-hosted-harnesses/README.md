@@ -168,17 +168,40 @@ host's real caches are never mounted (asserted in `verify.sh`).
 
 **Use a key minted for this purpose, with a hard spend cap, and nothing else.**
 
-| Harness    | Required host env var                          |
-|------------|------------------------------------------------|
-| `claude`   | `ANTHROPIC_API_KEY`                            |
-| `codex`    | `OPENAI_API_KEY`                               |
-| `amp`      | `AMP_API_KEY`                                  |
-| `opencode` | `ANTHROPIC_API_KEY` and/or `OPENAI_API_KEY`    |
-| `none`     | (none — refuses to carry any)                  |
+| Harness    | Required host env var                                        |
+|------------|--------------------------------------------------------------|
+| `claude`   | `ANTHROPIC_API_KEY`                                          |
+| `codex`    | `OPENAI_API_KEY`                                             |
+| `amp`      | `AMP_API_KEY`                                                |
+| `opencode` | `OPENCODE_API_KEY` (Zen), else `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `none`     | (none — refuses to carry any)                                |
 
 - **Keys are passed as env vars only.** No host credential file is ever mounted.
   `run.sh` refuses to launch a harness whose key is missing rather than starting
   a session that will fail halfway through.
+
+### opencode Zen is the preferred credential
+
+opencode ships its own pay-per-usage gateway ("Zen") at `opencode.ai/zen/v1`,
+billed by opencode and reached with a single `OPENCODE_API_KEY`. That fits this
+design better than direct provider keys, so `run.sh` prefers it whenever the
+variable is set:
+
+| Mode     | Trigger                             | Credential in guest | Reachable model hosts                |
+|----------|-------------------------------------|---------------------|--------------------------------------|
+| `zen`    | `OPENCODE_API_KEY` set              | that key only       | `opencode.ai`, `models.dev`          |
+| `direct` | Zen key absent, provider key set    | provider key(s)     | `api.anthropic.com`, `api.openai.com`, `models.dev` |
+
+Two things follow. A leak exposes **one** revocable, independently spend-capped
+key rather than every provider key you own. And a Zen session has no business
+reaching the provider APIs, so it **cannot** — the allowlist narrows to the
+gateway, which `verify.sh`'s `zen` section asserts in both directions.
+
+To go direct despite having a Zen key on the host, unset it for that session:
+
+```bash
+env -u OPENCODE_API_KEY ./run.sh opencode ~/src/myproject
+```
 - **Don't use subscription OAuth.** A Max/Pro OAuth token in a guest risks the
   whole account and has no spend ceiling; a scoped API key is bounded and
   revocable in one click. It also sidesteps the login flow, which wants a
@@ -220,7 +243,9 @@ with a fine-grained token scoped to specific repos, and add its host to
   boundary avoids a failure mode that buys nothing here.
 - **opencode** — `permission: {edit, bash, webfetch: "allow"}` merged into
   `opencode.json`, so hand edits to other keys survive. Needs `models.dev` for
-  its model catalog, which is allowlisted for this harness only.
+  its model catalog, allowlisted for this harness only. Conversation sharing is
+  off (`OPENCODE_DISABLE_SHARE=1`) — it would post session content to opencode's
+  servers. Prefers Zen; see **Credentials**.
 - **amp** — routes models server-side, so it cannot be pointed at a local model
   and always needs a real Amp credential. Its auto-approval setting is not
   pinned down here, so it runs at defaults and **will still prompt**.

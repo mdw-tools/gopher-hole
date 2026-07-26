@@ -44,6 +44,17 @@ guest() {
   container run --rm --cap-add CAP_NET_ADMIN --env "GOPHER_HARNESS=${harness}" "${IMAGE}" "$@"
 }
 
+# summary <harness> <opencode-mode> <shell-script> — run a session and echo only
+# its end-of-session egress summary. Asserting against the summary alone matters:
+# the firewall's startup line names the same hostnames, so matching the whole
+# output would let a test pass on the wrong evidence.
+summary() {
+  local harness="$1" mode="$2" script="$3"
+  container run --rm --cap-add CAP_NET_ADMIN \
+    --env "GOPHER_HARNESS=${harness}" --env "GOPHER_OPENCODE_MODE=${mode}" \
+    "${IMAGE}" bash -c "$script" 2>&1 | sed -n '/--- egress summary/,$p'
+}
+
 verify_image() {
   section "image: toolchain and all four harnesses baked into '${IMAGE}'"
   check "image '${IMAGE}' exists" container image inspect "${IMAGE}"
@@ -113,16 +124,43 @@ verify_egress() {
 
 }
 
+verify_zen() {
+  section "opencode Zen: gateway reachable, provider APIs walled off"
+  # Zen routes to many models behind one credential, so a Zen session has no
+  # business reaching api.anthropic.com or api.openai.com — and cannot.
+  local out reached refused
+  out=$(summary opencode zen '
+      curl -s -o /dev/null --max-time 20 https://opencode.ai/zen/v1/models
+      curl -s -o /dev/null --max-time 20 https://api.anthropic.com/v1/models')
+  reached=$(sed -n '/^reached:/,/^refused/p' <<<"$out")
+  refused=$(sed -n '/^refused/,$p' <<<"$out")
+
+  if [[ "$reached" == *"opencode.ai"* ]]; then ok "zen gateway opencode.ai reached"
+  else bad "zen gateway opencode.ai reached (reached: ${reached:0:120})"; fi
+
+  if [[ "$refused" == *"api.anthropic.com"* ]]; then ok "zen session refused api.anthropic.com"
+  else bad "zen session refused api.anthropic.com (refused: ${refused:0:120})"; fi
+
+  # Direct mode is the mirror image: provider APIs open, gateway not needed
+  out=$(summary opencode direct '
+      curl -s -o /dev/null --max-time 20 https://api.anthropic.com/v1/models
+      curl -s -o /dev/null --max-time 20 https://opencode.ai/zen/v1/models')
+  reached=$(sed -n '/^reached:/,/^refused/p' <<<"$out")
+  refused=$(sed -n '/^refused/,$p' <<<"$out")
+
+  if [[ "$reached" == *"api.anthropic.com"* ]]; then ok "direct mode reaches api.anthropic.com"
+  else bad "direct mode reaches api.anthropic.com (reached: ${reached:0:120})"; fi
+
+  if [[ "$refused" == *"opencode.ai"* ]]; then ok "direct mode refuses the zen gateway"
+  else bad "direct mode refuses the zen gateway (refused: ${refused:0:120})"; fi
+}
+
 verify_report() {
   section "egress report: an accurate record of where the session went"
-  # One session that reaches an allowlisted host and is refused another, then
-  # assert against the summary ONLY — the firewall's startup line names the same
-  # hostnames, so matching the whole output would pass on the wrong evidence.
   local out reached refused
-  out=$(guest claude bash -c '
+  out=$(summary claude direct '
       curl -s -o /dev/null --max-time 20 https://api.anthropic.com/v1/models
-      curl -s -o /dev/null --max-time 20 https://example.com' 2>&1 \
-    | sed -n '/--- egress summary/,$p')
+      curl -s -o /dev/null --max-time 20 https://example.com')
   reached=$(sed -n '/^reached:/,/^refused/p' <<<"$out")
   refused=$(sed -n '/^refused/,$p' <<<"$out")
 
@@ -169,6 +207,18 @@ verify_creds() {
   # A harness without its key must refuse to start rather than run keyless
   check_fails "claude refuses to launch without ANTHROPIC_API_KEY" \
     env -u ANTHROPIC_API_KEY ./run.sh claude "$dir" true
+  check_fails "opencode refuses to launch with no key at all" \
+    env -u OPENCODE_API_KEY -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+    ./run.sh opencode "$dir" true
+
+  # Zen takes precedence, and excludes the provider keys from the session
+  if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
+    check_out "zen session carries no ANTHROPIC_API_KEY" "unset" \
+      env ANTHROPIC_API_KEY=decoy ./run.sh opencode "$dir" \
+      bash -c 'echo "${ANTHROPIC_API_KEY:-unset}"'
+  else
+    ok "zen key precedence skipped (OPENCODE_API_KEY not set on host)"
+  fi
 
   rm -rf "$dir"
 }
@@ -228,7 +278,7 @@ verify_state() {
 main() {
   local sections=("$@")
   if [[ ${#sections[@]} -eq 0 ]]; then
-    sections=(image egress report creds run gitro state)
+    sections=(image egress zen report creds run gitro state)
   fi
   for s in "${sections[@]}"; do
     "verify_${s}"

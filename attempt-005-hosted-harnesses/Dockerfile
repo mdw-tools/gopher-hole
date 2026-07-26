@@ -49,11 +49,17 @@ ENV HTTP_PROXY=http://127.0.0.1:8888 \
 
 # Pinned versions are only reproducible if nothing updates itself mid-session,
 # and telemetry to unallowlisted hosts would just be dropped noise.
+#
+# OPENCODE_DISABLE_SHARE additionally turns off opencode's conversation sharing,
+# which would post session content to opencode's servers — squarely against the
+# point of this attempt. (Both OPENCODE_* names were read out of the pinned
+# binary rather than guessed at.)
 ENV DISABLE_AUTOUPDATER=1 \
     DISABLE_TELEMETRY=1 \
     DISABLE_ERROR_REPORTING=1 \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
-    OPENCODE_DISABLE_AUTOUPDATE=1
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_SHARE=1
 
 RUN useradd --create-home --shell /bin/bash agent
 

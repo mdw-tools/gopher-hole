@@ -43,7 +43,16 @@ DOMAINS=(
 case "$HARNESS" in
   claude)   DOMAINS+=(api.anthropic.com) ;;
   codex)    DOMAINS+=(api.openai.com) ;;
-  opencode) DOMAINS+=(api.anthropic.com api.openai.com models.dev) ;;
+  opencode)
+    # Zen (opencode's own pay-per-usage gateway) needs only opencode.ai, so a
+    # Zen session cannot reach the provider APIs at all. run.sh picks the mode
+    # from which credential is present. models.dev is the model catalog.
+    case "${GOPHER_OPENCODE_MODE:-direct}" in
+      zen)    DOMAINS+=(opencode.ai models.dev) ;;
+      direct) DOMAINS+=(api.anthropic.com api.openai.com models.dev) ;;
+      *) echo "init-firewall: unknown opencode mode '${GOPHER_OPENCODE_MODE}'" >&2; exit 1 ;;
+    esac
+    ;;
   amp)      DOMAINS+=(ampcode.com) ;;
   none)     ;;  # toolchain only — a sandbox shell with no model access
   *) echo "init-firewall: unknown harness '${HARNESS}'" >&2; exit 1 ;;
