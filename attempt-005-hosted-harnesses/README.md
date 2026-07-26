@@ -241,6 +241,24 @@ with a fine-grained token scoped to specific repos, and add its host to
   once on first run and never overwritten. Codex's own sandbox uses
   Landlock/seccomp, which the guest kernel may not provide; deferring to the VM
   boundary avoids a failure mode that buys nothing here.
+
+  It honours `OPENAI_API_KEY` directly — no `codex login`, so the missing browser
+  never comes up. It prefers a WebSocket transport
+  (`wss://api.openai.com/v1/responses`) and falls back to HTTPS; tinyproxy
+  tunnels both through the same `CONNECT`, so neither needs special handling.
+
+  Expect these in the egress summary, **refused and harmless**:
+
+  ```
+  refused (not on the allowlist):
+        2 chatgpt.com          # ChatGPT-plan auth probe — irrelevant with an API key
+        1 github.com           # update / release check
+        1 api.github.com
+  ```
+
+  Codex completes its API call regardless, so they stay off the allowlist. This
+  is the egress report doing its job: three phone-homes that no amount of
+  reading the docs would have told you about.
 - **opencode** — `permission: {edit, bash, webfetch: "allow"}` merged into
   `opencode.json`, so hand edits to other keys survive. Needs `models.dev` for
   its model catalog, allowlisted for this harness only. Conversation sharing is
