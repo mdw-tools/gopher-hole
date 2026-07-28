@@ -12,6 +12,8 @@
 #   ./run.sh ~/src/myproject hunk diff    # review agent changes in the TUI
 #
 # Environment (optional):
+#   LMSTUDIO_HOST           IPv4 address of a remote machine running LM Studio
+#                           (default: the container host, via the vmnet gateway)
 #   LMSTUDIO_PORT           host port LM Studio serves on (default 1234)
 #   LMSTUDIO_DEFAULT_MODEL  model id pi should default to
 #   EGRESS_ALLOW_VCS=1      also allow in-guest git/go get (default: LM Studio
@@ -41,6 +43,15 @@ GIT_NAME=$(git config --global user.name 2>/dev/null || true)
 GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
 [[ -n "$GIT_NAME" ]] && ENV_ARGS+=(--env "GIT_AUTHOR_NAME=${GIT_NAME}" --env "GIT_COMMITTER_NAME=${GIT_NAME}")
 [[ -n "$GIT_EMAIL" ]] && ENV_ARGS+=(--env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}" --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}")
+# LMSTUDIO_HOST must be an IPv4 literal: the guest has no DNS under locked
+# egress, so a hostname could be neither resolved by curl nor pinned by nft
+if [[ -n "${LMSTUDIO_HOST:-}" ]]; then
+  if [[ ! "$LMSTUDIO_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "error: LMSTUDIO_HOST must be an IPv4 address, got '${LMSTUDIO_HOST}'" >&2
+    exit 1
+  fi
+  ENV_ARGS+=(--env "LMSTUDIO_HOST=${LMSTUDIO_HOST}")
+fi
 [[ -n "${LMSTUDIO_PORT:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_PORT=${LMSTUDIO_PORT}")
 [[ -n "${LMSTUDIO_DEFAULT_MODEL:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_DEFAULT_MODEL=${LMSTUDIO_DEFAULT_MODEL}")
 [[ -n "${EGRESS_ALLOW_VCS:-}" ]] && ENV_ARGS+=(--env "EGRESS_ALLOW_VCS=${EGRESS_ALLOW_VCS}")

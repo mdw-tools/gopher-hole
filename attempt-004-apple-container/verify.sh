@@ -74,6 +74,8 @@ verify_run() {
   local host_email
   host_email=$(git config --global user.email 2>/dev/null || echo "no-host-email")
   check_out "git identity forwarded (env)" "$host_email" ./run.sh "$dir" git var GIT_AUTHOR_IDENT
+  check_fails "run.sh rejects non-IP LMSTUDIO_HOST" \
+    env LMSTUDIO_HOST=models.local ./run.sh "$dir" true
   rm -rf "$dir"
 }
 
@@ -91,6 +93,13 @@ verify_firewall() {
     "${locked[@]}" curl -fsS --max-time 10 https://example.com
   check_fails "github blocked by default" \
     "${locked[@]}" curl -fsS --max-time 10 https://github.com
+
+  # Remote LM Studio: LMSTUDIO_HOST repoints the single allowed destination,
+  # so the gateway itself is no longer reachable (TEST-NET IP — never answers)
+  local remote=(container run --rm --cap-add CAP_NET_ADMIN --env LMSTUDIO_HOST=203.0.113.7 "${IMAGE}")
+  check_fails "gateway blocked when LMSTUDIO_HOST is set" \
+    "${remote[@]}" bash -c \
+    'curl -fsS --max-time 5 "http://$(ip route | awk "/default/ {print \$3; exit}"):${LMSTUDIO_PORT:-1234}/v1/models"'
 
   # Opt-in posture: VCS + Go proxy re-enabled for in-guest fetches
   check "github allowed with EGRESS_ALLOW_VCS=1" \

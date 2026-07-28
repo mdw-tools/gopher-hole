@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Generate pi's provider config from the host's LM Studio server, reached via
-# the vmnet gateway. Runs at every container start (see entrypoint.sh) so the
-# model list always matches what LM Studio currently has loaded.
+# Generate pi's provider config from the LM Studio server — the container host
+# reached via the vmnet gateway by default, or a remote machine when
+# LMSTUDIO_HOST is set. Runs at every container start (see entrypoint.sh) so
+# the model list always matches what LM Studio currently has loaded.
 #
 # Context windows come from LM Studio's native REST API (/api/v0/models):
 # loaded_context_length (the enforceable limit for a loaded model) when
@@ -10,6 +11,7 @@
 # API is unavailable.
 #
 # Environment overrides:
+#   LMSTUDIO_HOST           IPv4 of the LM Studio machine (default: vmnet gateway)
 #   LMSTUDIO_PORT           host port LM Studio serves on (default 1234)
 #   LMSTUDIO_DEFAULT_MODEL  model id to pin as pi's default (default: first listed)
 set -euo pipefail
@@ -17,16 +19,19 @@ set -euo pipefail
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
 PORT="${LMSTUDIO_PORT:-1234}"
 
-GW=$(ip route | awk '/default/ {print $3; exit}')
-[[ -n "$GW" ]] || { echo "setup-pi: no default gateway found" >&2; exit 1; }
+HOST="${LMSTUDIO_HOST:-}"
+if [[ -z "$HOST" ]]; then
+  HOST=$(ip route | awk '/default/ {print $3; exit}')
+  [[ -n "$HOST" ]] || { echo "setup-pi: no default gateway found" >&2; exit 1; }
+fi
 
-if RAW=$(curl -fsS --max-time 5 "http://${GW}:${PORT}/api/v0/models" 2>/dev/null); then
+if RAW=$(curl -fsS --max-time 5 "http://${HOST}:${PORT}/api/v0/models" 2>/dev/null); then
   MODEL_LIST=$(jq '[ .data[]
                      | select(.type != "embeddings")
                      | { id: .id,
                          contextWindow: (.loaded_context_length // .max_context_length // 128000) } ]' <<<"$RAW")
 else
-  RAW=$(curl -fsS --max-time 5 "http://${GW}:${PORT}/v1/models")
+  RAW=$(curl -fsS --max-time 5 "http://${HOST}:${PORT}/v1/models")
   MODEL_LIST=$(jq '[ .data[]
                      | select(.id | test("embed") | not)
                      | { id: .id, contextWindow: 128000 } ]' <<<"$RAW")
@@ -34,7 +39,7 @@ fi
 
 mkdir -p "$AGENT_DIR"
 
-jq --arg baseUrl "http://${GW}:${PORT}/v1" '
+jq --arg baseUrl "http://${HOST}:${PORT}/v1" '
   {
     providers: {
       lmstudio: {
@@ -55,4 +60,4 @@ jq --arg model "$DEFAULT_MODEL" \
   '. + {defaultProvider: "lmstudio", defaultModel: $model}' \
   "$SETTINGS" > "$SETTINGS.tmp" && mv "$SETTINGS.tmp" "$SETTINGS"
 
-echo "setup-pi: lmstudio at http://${GW}:${PORT}/v1 — default model: ${DEFAULT_MODEL}"
+echo "setup-pi: lmstudio at http://${HOST}:${PORT}/v1 — default model: ${DEFAULT_MODEL}"

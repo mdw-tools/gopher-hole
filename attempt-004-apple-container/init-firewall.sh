@@ -3,8 +3,9 @@
 # privileges drop to the non-root 'agent' user. Because each container is its
 # own VM, these rules live in a separate guest kernel the agent cannot reach.
 #
-# Default posture (locked down): the only reachable destination is LM Studio on
-# the host gateway. Git and `go get` are expected to happen on the host, so no
+# Default posture (locked down): the only reachable destination is LM Studio —
+# on the host gateway, or on a remote machine when LMSTUDIO_HOST (an IPv4
+# literal) is set. Git and `go get` are expected to happen on the host, so no
 # VCS or DNS egress is allowed — this also closes the DNS-query exfil channel.
 #
 # Opt-in posture (EGRESS_ALLOW_VCS=1): additionally allow DNS via the gateway
@@ -14,12 +15,13 @@ set -euo pipefail
 
 GW=$(ip route | awk '/default/ {print $3; exit}')
 PORT="${LMSTUDIO_PORT:-1234}"
+LM_HOST="${LMSTUDIO_HOST:-$GW}"
 
 nft add table inet gopher
 nft add chain inet gopher output '{ type filter hook output priority 0; policy drop; }'
 nft add rule inet gopher output oif lo accept
 nft add rule inet gopher output ct state established,related accept
-nft add rule inet gopher output ip daddr "$GW" tcp dport "$PORT" accept
+nft add rule inet gopher output ip daddr "$LM_HOST" tcp dport "$PORT" accept
 
 if [[ "${EGRESS_ALLOW_VCS:-0}" == "1" ]]; then
   # DNS via the gateway resolver only — needed to resolve the hosts below

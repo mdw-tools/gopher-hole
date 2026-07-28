@@ -88,12 +88,13 @@ worth keeping. Concurrent sessions on different projects are just concurrent
 
 Environment overrides for `run.sh`:
 
-| Variable                 | Effect                                                        |
-|--------------------------|--------------------------------------------------------------|
-| `LMSTUDIO_PORT`          | Host port LM Studio serves on (default: 1234)                |
-| `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed)             |
-| `EGRESS_ALLOW_VCS=1`     | Also allow in-guest `git`/`go get` (default: LM Studio only) |
-| `SHARE_GO_CACHE=0`       | Don't share the host Go module cache (default: on, read-only)|
+| Variable                 | Effect                                                           |
+|--------------------------|------------------------------------------------------------------|
+| `LMSTUDIO_HOST`          | IPv4 of a remote LM Studio machine (default: the container host) |
+| `LMSTUDIO_PORT`          | Port LM Studio serves on (default: 1234)                         |
+| `LMSTUDIO_DEFAULT_MODEL` | Model id pi defaults to (default: first listed)                  |
+| `EGRESS_ALLOW_VCS=1`     | Also allow in-guest `git`/`go get` (default: LM Studio only)     |
+| `SHARE_GO_CACHE=0`       | Don't share the host Go module cache (default: on, read-only)    |
 
 ## Session posture: read-only `.git` + locked-down egress
 
@@ -144,7 +145,8 @@ mount in that case.
 ## Model wiring
 
 At container start, `setup-pi.sh` detects the vmnet gateway (the host) from
-the guest's default route, queries LM Studio's native REST API
+the guest's default route — or uses `LMSTUDIO_HOST` if set (see below) —
+then queries LM Studio's native REST API
 (`/api/v0/models`), and regenerates `models.json` with one entry per chat
 model — so pi's model list always matches what LM Studio actually has loaded.
 Each model's `contextWindow` is set dynamically: `loaded_context_length`
@@ -153,6 +155,32 @@ the model's `max_context_length`, else 128000. If the native API is
 unavailable (older LM Studio), it falls back to the OpenAI-compat
 `/v1/models` with the 128000 default. `defaultProvider`/`defaultModel` are
 pinned in pi's `settings.json` without clobbering other settings.
+
+### Remote LM Studio (`LMSTUDIO_HOST`)
+
+To run containers on one machine and the models on another, set
+`LMSTUDIO_HOST` to the model machine's LAN address:
+
+```bash
+LMSTUDIO_HOST=192.168.1.42 ./run.sh ~/src/myproject pi
+```
+
+`setup-pi.sh` then targets that address instead of the gateway, and the
+firewall's single allowed destination moves with it — the gateway itself
+becomes unreachable from the guest. The value must be an IPv4 literal (the
+guest has no DNS under locked egress, so a hostname could neither be resolved
+by curl nor pinned by nftables); `run.sh` rejects anything else. The model
+machine needs LM Studio's "Serve on Local Network" enabled, and the container
+machine's macOS must grant `container` local-network access.
+
+Two posture changes to be aware of in this mode: model traffic (prompts and
+code context) crosses the LAN as cleartext HTTP rather than staying
+host-local, and the guest's one allowed egress destination is now a second
+machine — so the "Model traffic: host-local only" row in the comparison table
+below no longer applies. If either bothers you, the alternative is a
+host-side relay (e.g. an ssh `-L` tunnel from the container machine to the
+model machine) with `LMSTUDIO_HOST` unset, which keeps the guest pinned to
+the gateway and encrypts the LAN leg.
 
 ## Reviewing changes with hunk
 
