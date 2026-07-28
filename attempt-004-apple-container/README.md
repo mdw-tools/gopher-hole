@@ -173,6 +173,15 @@ by curl nor pinned by nftables); `run.sh` rejects anything else. The model
 machine needs LM Studio's "Serve on Local Network" enabled, and the container
 machine's macOS must grant `container` local-network access.
 
+The scripts are baked into the image, so run `make image` after changing them
+— a stale image silently keeps the old firewall. To verify the remote setup
+from the container machine (whose own host runs no LM Studio, so the default
+gateway checks would fail there):
+
+```bash
+LMSTUDIO_HOST=192.168.1.42 ./verify.sh pi firewall
+```
+
 Two posture changes to be aware of in this mode: model traffic (prompts and
 code context) crosses the LAN as cleartext HTTP rather than staying
 host-local, and the guest's one allowed egress destination is now a second

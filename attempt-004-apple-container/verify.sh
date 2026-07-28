@@ -57,10 +57,14 @@ verify_image() {
 }
 
 verify_pi() {
-  section "pi: reaches LM Studio through the vmnet gateway"
+  section "pi: reaches LM Studio (vmnet gateway, or LMSTUDIO_HOST if set)"
+  local env_args=()
+  [[ -n "${LMSTUDIO_HOST:-}" ]] && env_args+=(--env LMSTUDIO_HOST="${LMSTUDIO_HOST}")
+  [[ -n "${LMSTUDIO_PORT:-}" ]] && env_args+=(--env LMSTUDIO_PORT="${LMSTUDIO_PORT}")
   mkdir -p "${PI_STATE_DIR}"
   check_out "pi one-shot prompt answers PONG" "PONG" \
-    container run --rm -v "${PI_STATE_DIR}:/home/agent/.pi" "${IMAGE}" \
+    container run --rm -v "${PI_STATE_DIR}:/home/agent/.pi" \
+    ${env_args[@]+"${env_args[@]}"} "${IMAGE}" \
     pi -p --no-session "Reply with exactly: PONG"
 }
 
@@ -85,10 +89,21 @@ verify_firewall() {
   local locked=(container run --rm --cap-add CAP_NET_ADMIN "${IMAGE}")
   local vcs=(container run --rm --cap-add CAP_NET_ADMIN --env EGRESS_ALLOW_VCS=1 "${IMAGE}")
 
-  # Default posture: only LM Studio reachable; git/go get happen on the host
-  check "LM Studio via gateway allowed (default)" \
-    "${locked[@]}" bash -c \
-    'curl -fsS --max-time 10 "http://$(ip route | awk "/default/ {print \$3; exit}"):${LMSTUDIO_PORT:-1234}/v1/models"'
+  # Default posture: only LM Studio reachable; git/go get happen on the host.
+  # With LMSTUDIO_HOST set (remote-model setup — the container host runs no
+  # LM Studio), test the real remote target instead of the gateway.
+  if [[ -n "${LMSTUDIO_HOST:-}" ]]; then
+    check "LM Studio via LMSTUDIO_HOST allowed" \
+      container run --rm --cap-add CAP_NET_ADMIN \
+        --env LMSTUDIO_HOST="${LMSTUDIO_HOST}" \
+        --env LMSTUDIO_PORT="${LMSTUDIO_PORT:-1234}" \
+        "${IMAGE}" \
+      curl -fsS --max-time 10 "http://${LMSTUDIO_HOST}:${LMSTUDIO_PORT:-1234}/v1/models"
+  else
+    check "LM Studio via gateway allowed (default)" \
+      "${locked[@]}" bash -c \
+      'curl -fsS --max-time 10 "http://$(ip route | awk "/default/ {print \$3; exit}"):${LMSTUDIO_PORT:-1234}/v1/models"'
+  fi
   check_fails "example.com blocked (default)" \
     "${locked[@]}" curl -fsS --max-time 10 https://example.com
   check_fails "github blocked by default" \
