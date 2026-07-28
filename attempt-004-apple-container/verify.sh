@@ -49,6 +49,7 @@ verify_image() {
   check "make available"    container run --rm "${IMAGE}" make --version
   check "gcc available"     container run --rm "${IMAGE}" gcc --version
   check "jq available"      container run --rm "${IMAGE}" jq --version
+  check "fd available"      container run --rm "${IMAGE}" fd --version
   check "python3 available" container run --rm "${IMAGE}" python3 --version
   check "perl available"    container run --rm "${IMAGE}" perl --version
   check "ip available"      container run --rm "${IMAGE}" ip -V

@@ -1,9 +1,13 @@
 FROM ubuntu:24.04
 
-# build-essential supplies make (for `make test`) plus gcc/g++ for cgo
+# build-essential supplies make (for `make test`) plus gcc/g++ for cgo.
+# ripgrep and fd-find are baked in because pi wants rg/fd and would otherwise
+# try to download them at startup — blocked by the egress firewall. Debian
+# ships fd as 'fdfind'; pi looks for 'fd', hence the symlink.
 RUN apt-get update && apt-get install -y \
-      curl ca-certificates git build-essential jq ripgrep python3 perl iproute2 nftables \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+      curl ca-certificates git build-essential jq ripgrep fd-find python3 perl iproute2 nftables \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    && ln -s "$(command -v fdfind)" /usr/local/bin/fd
 
 # Go from the official tarball (apt's golang is stale); arm64 because
 # containers on Apple Silicon run linux/arm64
