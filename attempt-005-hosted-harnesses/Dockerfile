@@ -67,7 +67,13 @@ ENV DISABLE_AUTOUPDATER=1 \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_SHARE=1
 
-RUN useradd --create-home --shell /bin/bash agent
+# Pre-create the XDG dirs as agent-owned: run.sh mounts volumes beneath them
+# (e.g. ~/.cache/go-build), and a mountpoint parent the runtime has to invent
+# is created root-owned — leaving the agent unable to mkdir siblings like
+# ~/.cache/opencode (EACCES at harness startup).
+RUN useradd --create-home --shell /bin/bash agent \
+    && mkdir -p /home/agent/.cache /home/agent/.config /home/agent/.local/share \
+    && chown -R agent:agent /home/agent
 
 # The mounted repo is host-owned (and .git rides in as a separate read-only
 # mount), so git's ownership guard would refuse to operate. Trust any dir —
