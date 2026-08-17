@@ -1,5 +1,8 @@
 # attempt-005-hosted-harnesses: Apple Containers + claude/codex/opencode/amp
 
+> **Superseded** by the unified `gopher-hole` tool at the repo root
+> (this design carried over as the hosted posture).
+
 ## Rationale
 
 attempt-004's thesis was *no credential exists in the guest* — a local model on

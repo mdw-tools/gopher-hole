@@ -1,5 +1,8 @@
 # attempt-004-apple-container: Apple Containers + pi + LM Studio + hunk
 
+> **Superseded** by the unified `gopher-hole` tool at the repo root
+> (this arrangement lives on there as the `pi:lmstudio` pair).
+
 ## Rationale
 
 Every prior attempt traded something away: Docker (attempt-001) had container

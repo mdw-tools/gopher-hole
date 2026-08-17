@@ -1,0 +1,437 @@
+#!/bin/bash
+# gopher-hole — launch an isolated coding-agent session in a disposable
+# apple/container VM, sharing only the project directory.
+#
+# Usage:
+#   gopher-hole <harness>[:<provider>] [PROJECT_DIR] [COMMAND...]
+#
+#   <harness>   claude | codex | opencode | pi | amp | none
+#   <provider>  anthropic | openai | bedrock | zen | amp | custom | none
+#               omitted → that harness's default (see providers.sh)
+#
+# PROJECT_DIR defaults to the current directory, so from the project itself:
+#   gopher-hole claude                       # claude → anthropic (its default)
+#   gopher-hole claude:bedrock               # claude → AWS Bedrock
+#   gopher-hole opencode                     # opencode → Zen (its default)
+#   gopher-hole none . hunk diff             # review changes, no model access
+#
+# harness and provider together determine BOTH the credential injected into the
+# guest and the egress allowlist, derived from the same table (providers.sh). A
+# claude:bedrock session carries only the Bedrock credential and can reach only
+# the Bedrock endpoint — not api.anthropic.com. One session, one provider, one key.
+#
+# Environment (optional):
+#   MODEL               model id to pin for this session
+#   BEDROCK_REGIONS     comma-separated regions to allow (default $AWS_REGION)
+#   CUSTOM_BASE_URL     provider=custom: the endpoint (its host is allowlisted)
+#   CUSTOM_API_KEY      provider=custom: bearer key, if the endpoint needs one
+#   EGRESS_EXTRA_HOSTS  comma-separated extra hostnames to allow this session
+#   SAFE_PROMPTS=1      keep the harness's own approval prompts on
+#   GOPHER_STATE_DIR    where per-harness state and caches live
+#                       (default ~/.gopher-hole)
+set -euo pipefail
+
+IMAGE="gopher-hole"
+# Resolve symlinks (make install puts one on the PATH) so providers.sh and the
+# Dockerfile are found next to the real script. macOS has no readlink -f.
+SELF="$0"
+while [[ -L "$SELF" ]]; do
+  TARGET=$(readlink "$SELF")
+  case "$TARGET" in
+    /*) SELF="$TARGET" ;;
+    *)  SELF="$(dirname "$SELF")/${TARGET}" ;;
+  esac
+done
+HERE=$(cd "$(dirname "$SELF")" && pwd -P)
+STATE_ROOT="${GOPHER_STATE_DIR:-${HOME}/.gopher-hole}"
+
+# shellcheck source=providers.sh
+. "${HERE}/providers.sh"
+
+usage() {
+  echo "usage: gopher-hole [--dry-run] <harness>[:<provider>] [PROJECT_DIR] [COMMAND...]" >&2
+  echo "       gopher-hole review | shell [PROJECT_DIR]" >&2
+  echo "       gopher-hole image | verify | clean" >&2
+  echo "  harnesses and their providers (first = default):" >&2
+  local h
+  for h in $(all_harnesses); do
+    printf '    %-9s %s\n' "$h" "$(harness_providers "$h")" >&2
+  done
+  exit 2
+}
+
+DRYRUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then DRYRUN=1; shift; fi
+
+# --- wizard -------------------------------------------------------------------
+# Bare invocation: walk the two questions — which agent, where does inference
+# run — with each option annotated by what it means for credentials. All wizard
+# chatter goes to stderr so --dry-run's stdout stays machine-readable.
+
+# pick_from <input> <default> <items...> — resolve a menu answer (number, name,
+# or empty for the default) to an item; fails on anything else.
+pick_from() {
+  local input="$1" default="$2" i=0 item
+  shift 2
+  if [[ -z "$input" ]]; then echo "$default"; return 0; fi
+  for item in "$@"; do
+    i=$((i + 1))
+    if [[ "$input" == "$i" || "$input" == "$item" ]]; then echo "$item"; return 0; fi
+  done
+  return 1
+}
+
+# provider_label <provider> — one menu line: posture, credential var and
+# whether it is set, and (for lmstudio) a quick server probe.
+provider_label() {
+  local p="$1" cred host port resp count
+  if [[ "$(provider_posture "$p")" == "local" ]]; then
+    host="${LMSTUDIO_HOST:-localhost}" port="${LMSTUDIO_PORT:-1234}"
+    if resp=$(curl -fsS --max-time 1 "http://${host}:${port}/v1/models" 2>/dev/null); then
+      count=$(printf '%s' "$resp" | jq '.data | length' 2>/dev/null || echo '?')
+      echo "local — LM Studio detected at ${host}:${port} (${count} models; no API key enters the guest)"
+    else
+      echo "local — LM Studio NOT detected at ${host}:${port}"
+    fi
+    return 0
+  fi
+  case "$p" in
+    none)   echo "none — keyless sandbox shell"; return 0 ;;
+    custom) cred="CUSTOM_BASE_URL" ;;
+    *)      cred=$(provider_cred_vars "$p" | awk '{print $1}') ;;
+  esac
+  if [[ -n "${!cred:-}" ]]; then echo "hosted — ${p}  (${cred} ✓ set)"
+  else echo "hosted — ${p}  (${cred} ✗ not set)"; fi
+}
+
+run_wizard() {
+  local answer i h p sel_harness sel_provider default_h default_p
+  echo "gopher-hole — isolated agent session" >&2
+  echo "project: $(pwd -P)" >&2
+  echo >&2
+
+  set -- $(all_harnesses)
+  default_h="$1"
+  echo "Which agent?" >&2
+  i=0
+  for h in $(all_harnesses); do
+    i=$((i + 1))
+    printf '  %d. %s\n' "$i" "$h" >&2
+  done
+  printf 'agent [%s]: ' "$default_h" >&2
+  read -r answer || usage
+  sel_harness=$(pick_from "$answer" "$default_h" $(all_harnesses)) \
+    || { echo "error: invalid choice '${answer}'" >&2; exit 2; }
+
+  default_p=$(harness_default_provider "$sel_harness")
+  echo >&2
+  echo "Where does inference run?  (${sel_harness})" >&2
+  i=0
+  for p in $(harness_providers "$sel_harness"); do
+    i=$((i + 1))
+    printf '  %d. %s\n' "$i" "$(provider_label "$p")" >&2
+  done
+  printf 'inference [%s]: ' "$default_p" >&2
+  read -r answer || usage
+  sel_provider=$(pick_from "$answer" "$default_p" $(harness_providers "$sel_harness")) \
+    || { echo "error: invalid choice '${answer}'" >&2; exit 2; }
+
+  echo >&2
+  if [[ "$sel_provider" == "none" ]]; then
+    echo "  session    ${sel_harness} — keyless sandbox" >&2
+  else
+    echo "  session    ${sel_harness} → ${sel_provider} ($(provider_posture "$sel_provider") posture)" >&2
+  fi
+  if [[ -d "$(pwd -P)/.git" ]]; then
+    echo "  mounts     $(pwd -P)  (.git read-only)" >&2
+  else
+    echo "  mounts     $(pwd -P)" >&2
+  fi
+  printf 'launch? [Y/n] ' >&2
+  read -r answer || usage
+  case "$answer" in
+    n|N|no|NO) echo "aborted." >&2; exit 0 ;;
+  esac
+  SPEC="${sel_harness}:${sel_provider}"
+}
+
+# Subcommands. review/shell are sugar over the keyless 'none' harness;
+# image/verify/clean run against the repo the script lives in.
+case "${1:-}" in
+  review) shift; set -- none "${1:-$(pwd)}" hunk diff ;;
+  shell)  shift; set -- none "${1:-$(pwd)}" bash ;;
+  image|clean) exec make -C "$HERE" "$1" ;;
+  verify) shift; exec "$HERE/verify.sh" "$@" ;;
+esac
+
+if [[ $# -eq 0 ]]; then
+  run_wizard   # sets SPEC, or exits (usage on EOF, clean exit on 'n')
+else
+  SPEC="$1"; shift
+fi
+
+HARNESS="${SPEC%%:*}"
+if [[ "$SPEC" == *:* ]]; then PROVIDER="${SPEC#*:}"; else PROVIDER=""; fi
+
+harness_providers "$HARNESS" >/dev/null 2>&1 || {
+  echo "error: unknown harness '${HARNESS}'" >&2; usage; }
+
+[[ -n "$PROVIDER" ]] || PROVIDER=$(harness_default_provider "$HARNESS")
+
+harness_supports "$HARNESS" "$PROVIDER" || {
+  echo "error: harness '${HARNESS}' does not support provider '${PROVIDER}'." >&2
+  echo "       supported: $(harness_providers "$HARNESS")" >&2
+  if [[ "$HARNESS" == "codex" && "$PROVIDER" == "bedrock" ]]; then
+    echo "       codex has no verified Bedrock configuration path; put an" >&2
+    echo "       OpenAI-compatible gateway in front of Bedrock and use" >&2
+    echo "       codex:custom with CUSTOM_BASE_URL. See README." >&2
+  fi
+  exit 1
+}
+
+PROJECT_DIR="${1:-$(pwd)}"
+shift || true
+
+# Resolve symlinks so the host path and the in-guest mount agree exactly
+PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd -P)
+
+ENV_ARGS=(--env "GOPHER_HARNESS=${HARNESS}" --env "GOPHER_PROVIDER=${PROVIDER}")
+MOUNTS=()
+
+[[ -n "${MODEL:-}" ]] && ENV_ARGS+=(--env "MODEL=${MODEL}")
+
+# --- credentials -----------------------------------------------------------
+# Exactly ONE provider's credential enters the guest, chosen by the matrix. No
+# host credential file is ever mounted, and no other provider's key is forwarded
+# even when it is sitting right there in your host environment — so a leak
+# exposes one revocable, spend-capped key rather than every key you own.
+missing_key() {
+  echo "error: ${HARNESS}/${PROVIDER} needs $* set in your host environment." >&2
+  echo "       Use a dedicated, spend-capped key — see README 'Credentials'." >&2
+  exit 1
+}
+
+case "$PROVIDER" in
+  bedrock)
+    # AWS_BEARER_TOKEN_BEDROCK is a Bedrock-SCOPED credential. AWS_ACCESS_KEY_ID
+    # is a general AWS credential whose blast radius is whatever IAM permits —
+    # a categorically worse thing to hand an unattended agent. Prefer the bearer
+    # token; warn loudly on the fallback rather than silently degrading.
+    if [[ -n "${AWS_BEARER_TOKEN_BEDROCK:-}" ]]; then
+      ENV_ARGS+=(--env "AWS_BEARER_TOKEN_BEDROCK=${AWS_BEARER_TOKEN_BEDROCK}")
+    elif [[ -n "${AWS_ACCESS_KEY_ID:-}" && -n "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+      echo "warning: using general AWS credentials rather than a Bedrock API key." >&2
+      echo "         AWS_BEARER_TOKEN_BEDROCK is scoped to Bedrock; access keys are" >&2
+      echo "         scoped to whatever IAM allows. Ensure this principal can do" >&2
+      echo "         nothing but bedrock:InvokeModel*. See README." >&2
+      ENV_ARGS+=(--env "AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}" \
+                 --env "AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}")
+      # Short-lived STS credentials decay on their own — strictly preferable
+      [[ -n "${AWS_SESSION_TOKEN:-}" ]] \
+        && ENV_ARGS+=(--env "AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}")
+    else
+      missing_key "AWS_BEARER_TOKEN_BEDROCK (preferred) or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY"
+    fi
+    AWS_REGION_EFF="${AWS_REGION:-us-east-1}"
+    ENV_ARGS+=(--env "AWS_REGION=${AWS_REGION_EFF}")
+    [[ -n "${BEDROCK_REGIONS:-}" ]] && ENV_ARGS+=(--env "BEDROCK_REGIONS=${BEDROCK_REGIONS}")
+    ;;
+
+  custom)
+    # An arbitrary endpoint: its hostname is the only thing allowlisted, and it
+    # is resolved on the HOST before the guest boots, so nothing inside can
+    # repoint the harness at somewhere else and reach it.
+    [[ -n "${CUSTOM_BASE_URL:-}" ]] || missing_key "CUSTOM_BASE_URL"
+    ENV_ARGS+=(--env "CUSTOM_BASE_URL=${CUSTOM_BASE_URL}")
+    [[ -n "${CUSTOM_API_KEY:-}" ]] && ENV_ARGS+=(--env "CUSTOM_API_KEY=${CUSTOM_API_KEY}")
+    ;;
+
+  lmstudio)
+    # No credential exists — the point of the local posture. LMSTUDIO_HOST must
+    # be an IPv4 literal: the guest has no DNS under total lockdown, so a
+    # hostname could be neither resolved by curl nor pinned by nftables.
+    if [[ -n "${LMSTUDIO_HOST:-}" ]]; then
+      if [[ ! "$LMSTUDIO_HOST" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        echo "error: LMSTUDIO_HOST must be an IPv4 address, got '${LMSTUDIO_HOST}'" >&2
+        exit 1
+      fi
+      ENV_ARGS+=(--env "LMSTUDIO_HOST=${LMSTUDIO_HOST}")
+    fi
+    [[ -n "${LMSTUDIO_PORT:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_PORT=${LMSTUDIO_PORT}")
+    [[ -n "${LMSTUDIO_DEFAULT_MODEL:-}" ]] && ENV_ARGS+=(--env "LMSTUDIO_DEFAULT_MODEL=${LMSTUDIO_DEFAULT_MODEL}")
+    ;;
+
+  none) ;;  # deliberately keyless
+
+  *)
+    CRED_VAR=$(provider_cred_vars "$PROVIDER")
+    if [[ -z "${!CRED_VAR:-}" ]]; then missing_key "$CRED_VAR"; fi
+    ENV_ARGS+=(--env "${CRED_VAR}=${!CRED_VAR}")
+    ;;
+esac
+
+[[ -n "${EGRESS_EXTRA_HOSTS:-}" ]] && ENV_ARGS+=(--env "EGRESS_EXTRA_HOSTS=${EGRESS_EXTRA_HOSTS}")
+
+# A non-default proxy port has to move the client env too, or the harnesses
+# would keep dialling the image's baked-in 8888 and get dropped.
+if [[ -n "${GOPHER_PROXY_PORT:-}" ]]; then
+  PROXY_URL="http://127.0.0.1:${GOPHER_PROXY_PORT}"
+  ENV_ARGS+=(--env "GOPHER_PROXY_PORT=${GOPHER_PROXY_PORT}" \
+             --env "HTTP_PROXY=${PROXY_URL}"  --env "HTTPS_PROXY=${PROXY_URL}" \
+             --env "http_proxy=${PROXY_URL}"  --env "https_proxy=${PROXY_URL}")
+fi
+
+# --- per-harness state ------------------------------------------------------
+# Dedicated dirs under ~/.gopher-hole. The host's own ~/.claude, ~/.codex etc.
+# are never mounted: they hold credentials, history, MCP tokens and your global
+# instructions, none of which belong in a guest running unattended.
+# State is keyed by harness AND provider: a claude:anthropic session and a
+# claude:bedrock session get separate config, so provider-specific settings can't
+# leak across sessions or fight each other on startup.
+if [[ "$HARNESS" != "none" ]]; then
+  STATE="${STATE_ROOT}/state/${HARNESS}-${PROVIDER}"
+  # One-time migration from attempt-004's state dir. Runs only while the new
+  # location does not exist yet, so a reappearing old dir never clobbers it.
+  OLD_PI_STATE="${HOME}/.pi-gopher-hole"
+  if [[ "$HARNESS" == "pi" && "$PROVIDER" == "lmstudio" \
+        && -d "$OLD_PI_STATE" && ! -e "$STATE" ]]; then
+    mkdir -p "${STATE_ROOT}/state"
+    mv "$OLD_PI_STATE" "$STATE"
+    echo "note: migrated ${OLD_PI_STATE} -> ${STATE}" >&2
+  fi
+  mkdir -p "$STATE"
+  case "$HARNESS" in
+    claude)
+      MOUNTS+=(--volume "${STATE}:/home/agent/.claude")
+      ENV_ARGS+=(--env "CLAUDE_CONFIG_DIR=/home/agent/.claude")
+      ;;
+    codex)
+      MOUNTS+=(--volume "${STATE}:/home/agent/.codex")
+      ENV_ARGS+=(--env "CODEX_HOME=/home/agent/.codex")
+      ;;
+    opencode)
+      mkdir -p "${STATE}/config" "${STATE}/data"
+      MOUNTS+=(--volume "${STATE}/config:/home/agent/.config/opencode" \
+               --volume "${STATE}/data:/home/agent/.local/share/opencode")
+      ;;
+    pi)
+      MOUNTS+=(--volume "${STATE}:/home/agent/.pi")
+      ;;
+    amp)
+      MOUNTS+=(--volume "${STATE}:/home/agent/.config/amp")
+      ;;
+  esac
+fi
+
+# --- toolchain caches (posture-dependent) ------------------------------------
+POSTURE=$(provider_posture "$PROVIDER")
+if [[ "$POSTURE" == "hosted" ]]; then
+  # Guest-owned and writable, persisted across sessions so builds are fast after
+  # the first. Deliberately NOT the host's real caches: the Go proxy is reachable
+  # through the filter, so the guest can just fetch its own and the host's cache
+  # stays out of reach entirely.
+  CACHE="${STATE_ROOT}/cache"
+  mkdir -p "${CACHE}/go-mod" "${CACHE}/go-build" "${CACHE}/npm"
+  MOUNTS+=(--volume "${CACHE}/go-mod:/home/agent/go/pkg/mod" \
+           --volume "${CACHE}/go-build:/home/agent/.cache/go-build" \
+           --volume "${CACHE}/npm:/home/agent/.npm")
+  ENV_ARGS+=(--env "GOMODCACHE=/home/agent/go/pkg/mod" \
+             --env "GOCACHE=/home/agent/.cache/go-build" \
+             --env "npm_config_cache=/home/agent/.npm")
+else
+  # Local posture: egress is fully closed, so the guest cannot fetch modules.
+  # Share the host Go module cache READ-ONLY instead — module source is
+  # platform-independent, so the linux guest builds fine against the darwin
+  # host's downloads. GOPROXY=off makes a missing module fail fast rather than
+  # stalling on the dropped-SYN firewall. SHARE_GO_CACHE=0 skips the share.
+  if [[ "${SHARE_GO_CACHE:-1}" == "1" ]]; then
+    HOST_GOMODCACHE=$(go env GOMODCACHE 2>/dev/null || true)
+    if [[ -n "$HOST_GOMODCACHE" && -d "$HOST_GOMODCACHE" ]]; then
+      MOUNTS+=(--volume "${HOST_GOMODCACHE}:${HOST_GOMODCACHE}:ro")
+      ENV_ARGS+=(--env "GOMODCACHE=${HOST_GOMODCACHE}" \
+                 --env "GOCACHE=/home/agent/.cache/go-build" \
+                 --env "GOPROXY=off")
+    fi
+  fi
+fi
+
+# --- git identity, no host gitconfig ---------------------------------------
+GIT_NAME=$(git config --global user.name 2>/dev/null || true)
+GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
+[[ -n "$GIT_NAME" ]] && ENV_ARGS+=(--env "GIT_AUTHOR_NAME=${GIT_NAME}" --env "GIT_COMMITTER_NAME=${GIT_NAME}")
+[[ -n "$GIT_EMAIL" ]] && ENV_ARGS+=(--env "GIT_AUTHOR_EMAIL=${GIT_EMAIL}" --env "GIT_COMMITTER_EMAIL=${GIT_EMAIL}")
+
+# --- read-only .git ---------------------------------------------------------
+# The agent edits the working tree freely but cannot write commits, config,
+# hooks or filter drivers. This closes the path where poisoned git metadata
+# executes when YOU run git on the host — the main host-compromise vector for
+# an agent that is otherwise confined to a VM. You commit and push from the
+# host after reviewing the diff.
+GIT_MOUNT=()
+GIT_DIR_PATH="${PROJECT_DIR}/.git"
+if [[ -d "$GIT_DIR_PATH" ]]; then
+  GIT_MOUNT+=(--volume "${GIT_DIR_PATH}:${GIT_DIR_PATH}:ro")
+elif [[ -e "$GIT_DIR_PATH" ]]; then
+  echo "note: ${GIT_DIR_PATH} is a file (worktree/submodule) — read-only .git protection skipped." >&2
+fi
+
+# --- default command --------------------------------------------------------
+# No command given: launch the harness with its approvals off, because the VM
+# boundary is what makes that safe. SAFE_PROMPTS=1 keeps them on.
+if [[ $# -eq 0 ]]; then
+  case "$HARNESS" in
+    claude)
+      if [[ "${SAFE_PROMPTS:-0}" == "1" ]]; then set -- claude
+      else set -- claude --dangerously-skip-permissions; fi
+      [[ -n "${MODEL:-}" ]] && set -- "$@" --model "${MODEL}"
+      ;;
+    codex)
+      set -- codex   # approvals off via config.toml
+      [[ -n "${MODEL:-}" ]] && set -- "$@" -m "${MODEL}"
+      ;;
+    opencode)
+      set -- opencode   # permissions allowed via opencode.json
+      [[ -n "${MODEL:-}" ]] && set -- "$@" --model "${MODEL}"
+      ;;
+    pi)
+      set -- pi   # provider/model pinned in settings.json by setup-harness.sh
+      ;;
+    amp)      set -- amp ;;
+    none)     set -- bash ;;
+  esac
+fi
+
+# Allocate a TTY only when we have one (verify.sh runs without)
+TTY_ARGS=()
+[[ -t 0 ]] && TTY_ARGS+=(-it)
+
+# CAP_NET_ADMIN lets the entrypoint's root stage install the nftables ruleset in
+# the guest's own kernel; setpriv strips it before the agent user runs, so the
+# agent can neither flush nor read the ruleset.
+CMD=(container run --rm
+  --cap-add CAP_NET_ADMIN
+  ${TTY_ARGS[@]+"${TTY_ARGS[@]}"}
+  --volume "${PROJECT_DIR}:${PROJECT_DIR}"
+  ${GIT_MOUNT[@]+"${GIT_MOUNT[@]}"}
+  ${MOUNTS[@]+"${MOUNTS[@]}"}
+  --workdir "${PROJECT_DIR}"
+  ${ENV_ARGS[@]+"${ENV_ARGS[@]}"}
+  "${IMAGE}" "$@")
+
+if [[ $DRYRUN -eq 1 ]]; then
+  # Print the invocation with credential VALUES redacted — names may show,
+  # values never (a dry run must be safe to paste anywhere).
+  CRED_NAMES=" $(all_provider_cred_vars) "
+  OUT=""
+  for ARG in "${CMD[@]}"; do
+    if [[ "$ARG" == *=* ]]; then
+      VAR="${ARG%%=*}"
+      [[ "$CRED_NAMES" == *" ${VAR} "* ]] && ARG="${VAR}=<redacted>"
+    fi
+    OUT="${OUT}${ARG} "
+  done
+  echo "${OUT% }"
+  exit 0
+fi
+
+exec "${CMD[@]}"
