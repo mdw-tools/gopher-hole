@@ -520,9 +520,11 @@ verify_wizard() {
   dir=$(cd "$(mktemp -d)" && pwd -P)
   root=$(pwd -P)
 
-  # Menu numbers produce the same invocation as the explicit pair
+  # Menu numbers produce the same invocation as the explicit pair. The
+  # explicit calls take </dev/null so both sides are non-TTY: the launcher
+  # adds -it only on a TTY, and the wizard side is always piped.
   out_wiz=$(cd "$dir" && printf '4\n4\n\n' | "$root/gopher-hole" --dry-run 2>/dev/null)
-  out_exp=$("$root/gopher-hole" --dry-run pi:lmstudio "$dir" 2>/dev/null)
+  out_exp=$("$root/gopher-hole" --dry-run pi:lmstudio "$dir" </dev/null 2>/dev/null)
   if [[ -n "$out_wiz" && "$out_wiz" == "$out_exp" ]]; then
     ok "menu choices match the explicit pair (pi:lmstudio)"
   else bad "menu choices match the explicit pair (wiz: ${out_wiz:0:80} / exp: ${out_exp:0:80})"; fi
@@ -534,7 +536,7 @@ verify_wizard() {
 
   # Enter everywhere lands on the built-in defaults (first harness, its first provider)
   out_wiz=$(cd "$dir" && printf '\n\n\n' | env ANTHROPIC_API_KEY=decoy "$root/gopher-hole" --dry-run 2>/dev/null)
-  out_exp=$(env ANTHROPIC_API_KEY=decoy "$root/gopher-hole" --dry-run claude:anthropic "$dir" 2>/dev/null)
+  out_exp=$(env ANTHROPIC_API_KEY=decoy "$root/gopher-hole" --dry-run claude:anthropic "$dir" </dev/null 2>/dev/null)
   if [[ -n "$out_wiz" && "$out_wiz" == "$out_exp" ]]; then
     ok "empty input accepts the defaults (claude:anthropic)"
   else bad "empty input accepts the defaults"; fi
